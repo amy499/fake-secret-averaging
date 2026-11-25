@@ -1,0 +1,3 @@
+# Evaluation-harness paths (the root .gitignore anchors these at the repository root).
+secret_types/generated/
+slurm/logs/

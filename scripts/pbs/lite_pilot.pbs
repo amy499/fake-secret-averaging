@@ -1,0 +1,22 @@
+#!/bin/bash
+#PBS -N lite_pilot
+#PBS -l select=1:ncpus=16:ngpus=1:mem=110gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#
+# lite_pilot.pbs (the PBS cluster, short-queue): FSA-lite timing pilot for Qwen2.5-7B on one A100. Builds the
+# training data if the config's data.dir has none (its data.builder; CPU), re-runs the contamination
+# check against the PBS cluster harness data ($HARNESS_DATA; stops on FAIL), then v2_train --mode pilot:
+# replies for pilot.n_reply_keys units, one dev evaluation, pilot.steps training steps; prints
+# "PILOT:" (sec/step, projected run, steps_for_1h15) and writes <run>/pilot_timing.json. No adapter.
+#   qsub -o $SCRATCH/fsa_main_logs/lite_pilot.log $REPO_ROOT/scripts/pbs/lite_pilot.pbs
+#   run3: qsub -v CONFIG_LITE=configs/training/experiments/fsa_lite_qwen7b_run3.yaml,RUN_DIR=outputs/training/fsa_lite_qwen7b_run3_pilot -o ... lite_pilot.pbs
+set -euo pipefail
+source "${REPO_ROOT:-${PBS_O_WORKDIR:-$PWD}}/scripts/lib/common_lite_pbs.sh"
+lite_pbs_require_job
+lite_pbs_banner
+lite_pbs_env
+lite_pbs_require_venv
+lite_pbs_require_inputs
+lite_pbs_build_data || { echo "data build or contamination check FAILED: nothing trained"; exit 1; }
+"$PY" "$V2/v2_train.py" --config "$CONFIG_LITE" --mode pilot --device cuda ${RUN_DIR:+--run-dir "$RUN_DIR"}

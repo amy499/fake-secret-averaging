@@ -1,0 +1,25 @@
+# ATTACK STUDY config (core/runner.py: secret in context, sampled leak replies, attackers). Not the team protocol:
+# team-table runs use `python run.py --approach ...` (core/protocol.py; caps 48/256/512/64 per docs/eval_protocol.md).
+# Tier 1: code_check, defence = fsa
+name: code_check__fsa
+model: {name: gemma3-12b-it, device: cuda, dtype: bfloat16}
+secret: digits_4
+benchmark: {name: code_check, split: test}
+defence:
+  name: fsa
+  # TODO: set to a trained adapter (or train: true + train_config)
+  adapter: outputs/training/<run_id>/adapter   # relative to the repository root
+baseline_run: auto   # newest matching run with defence: none (for utility_delta)
+attackers:
+  - {name: likelihood, label: likelihood_grey_box, mode: grey_box, K: 100, calibrate: true, n_calib: 50}
+  - {name: likelihood, label: likelihood_public_weights, mode: public_weights, K: 100, calibrate: true, n_calib: 50}
+  - {name: direct_request}
+  - {name: best_of_n, n_max: 100, budget: 100}
+  - {name: covert_encoding}
+metrics: [code_metrics, joint_success, utility_delta, over_refusal, latency, attack_success_vs_queries]
+decoding:
+  scored: {temperature: 0.0, max_new_tokens: 256}          # greedy for scored answers
+  leak: {temperature: 1.0, top_p: 1.0, max_new_tokens: 256, k: 5}  # seeds 2026e6 + secret_index*100 + j
+controls: {no_secret: true}
+budget: 20
+output_dir: outputs

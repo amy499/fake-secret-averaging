@@ -1,0 +1,78 @@
+# FSA-lite run2 on Gemma-3-12B-it (the Slurm cluster, A40). Same data, objective (K = 4 fresh fakes, need-KL
+# lambda = 1 on authorised and benign turns), LoRA (r16 / alpha 32, q/k/v/o, all 48 layers) and model
+# pin as fsa_lite_gemma12b.yaml (run1, unchanged). Changes, chosen from run1's DEV and TRAIN signals
+# only (dev tt_attack leak 0.312 = 5/16 at steps 0 / 250 / 300 / 350 / 400; FSA term 0.0004 .. 1.9 with
+# no trend; src/fsa_lite/lite/lite_diagnose.py measures the causes on run1's files):
+#   * fsa.units: leaking_reply. The FSA target is the frozen model under fake contexts, so where the
+#     cached base reply does not contain the real code, student (real context) and target agree and
+#     the term is ~0: run1's few leaking replies carried the signal, most draws carried none.
+#   * generation.replies_per_type: 3 base replies per tt_attack / cimem_unauthorised unit (1 in run1),
+#     so about three times as many leaking (unit, reply) pairs to draw from.
+#   * fsa.secret_token_weight: 10. run1's FSA term was a plain mean over every reply token, so the few
+#     code tokens of a ~100-token reply weighed a few percent of each example.
+#   * mix: tt_attack 0.40 -> 0.55, cimem_unauthorised 0.15 -> 0.05 (its dev leak was 0.0 throughout:
+#     its base replies rarely hold the value, so few FSA signals); benign 0.20 -> 0.15. Need-KL turns
+#     (tt_authorised, cimem_authorised, benign) keep 40% of the draws so access-granted does not collapse.
+#   * train: lr 1e-4 -> 2e-4, warmup 10 -> 20 (clip 1.0 kept), steps 400 -> 500.
+#   * dev: all 112 dev tt_attack units (16 in run1; these include run1's 16), every 125 steps, replies
+#     saved to dev_replies.jsonl (identical-reply checks between evaluations).
+# Time on one A40 (estimate from run1's 5.8 s/step): ~6.0 s/step x 500 = ~50 min; reply phase ~2,600
+# new replies when run1's replies.jsonl is copied into the run folder first (README), ~25 min; 5 dev
+# evaluations of 160 replies, ~10 min; load ~5 min: ~1.5 h, resumable (lite_train.sbatch exits 3).
+name: fsa_lite_gemma12b_run2
+seed: 0
+model_key: gemma
+model:
+  hf_id: google/gemma-3-12b-it
+  revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80
+  dtype: bfloat16
+data:
+  source: lite
+  dir: ~/fsa_lite_data/built       # run1's built data, reused (re-checked for contamination by the job)
+  max_seq_tokens: 1024
+lora:
+  layers: all
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+fsa:
+  k: 4                             # fakes per FSA example, drawn fresh at every draw
+  units: leaking_reply             # FSA draws: (unit, reply) pairs whose cached base reply holds the real secret
+  secret_token_weight: 10          # secret tokens weigh 10x in the FSA term's per-token mean
+need:
+  weight: 1.0
+mix:
+  weights:
+    tt_attack: 0.55
+    tt_authorised: 0.15
+    cimem_unauthorised: 0.05
+    cimem_authorised: 0.10
+    benign: 0.15
+generation:
+  replies_per_unit: 1
+  replies_per_type: {tt_attack: 3, cimem_unauthorised: 3}
+  max_new_tokens: 128
+  temperature: 1.0
+  batch_size: 16
+train:
+  steps: 500
+  lr: 2.0e-4
+  warmup_steps: 20
+  weight_decay: 0.0
+  grad_accum: 4
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  fake_batch: 4
+  checkpoint_every: 50
+  log_every: 10
+dev:
+  every: 125
+  n_per_type: {tt_attack: 112, tt_authorised: 16, cimem_unauthorised: 16, cimem_authorised: 16}
+  max_new_tokens: 128
+  temperature: 1.0
+  batch_size: 16
+  save_replies: true
+pilot:
+  steps: 30
+  n_reply_keys: 80

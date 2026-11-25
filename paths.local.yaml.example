@@ -1,0 +1,15 @@
+# paths.local.yaml.example: copy to paths.local.yaml (git-ignored) at the repository root.
+# Machine-specific locations of large local files that the configs refer to by key.
+#
+# adapters: an approach spec or attack-study config says `adapter: {local: <key>}`; the fsa bridge
+# (eval/experiments/_bridges/fsa.py) loads adapters.<key> from here, checks its sha256 against the
+# spec's adapter_sha256, and refuses on a mismatch. FSA_ADAPTER_DIR=/path overrides it for one job.
+# Relative paths are taken from the repository root.
+adapters:
+  gemma_fsa0: /path/to/outputs/training/<fsa_v1_gemma_run>/adapter
+  qwen_fsa0: /path/to/outputs/training/<fsa_v1_qwen_run>/adapter
+  gemma_fsa_lite: outputs/training/fsa_lite_gemma12b_run2/adapter
+  qwen_fsa_lite_run2: outputs/training/fsa_lite_qwen7b_run2/adapter
+  gemma_fsa_lite_run3: outputs/training/fsa_lite_gemma12b_run3/adapter
+  qwen_fsa_lite_run3: outputs/training/fsa_lite_qwen7b_run3/adapter
+  gemma_fsa_lite_run3_nouse: outputs/training/fsa_lite_gemma12b_run3_nouse/adapter

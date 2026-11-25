@@ -1,0 +1,50 @@
+{
+  "expected": "leave-one-out: frequency in the other secrets' replies",
+  "pool": "train + held-out secrets",
+  "rows": [
+    {
+      "secret": "68",
+      "digits_observed": 15,
+      "digits_expected": 22.42857142857143,
+      "exact_observed": 0,
+      "exact_expected": 0.0,
+      "digits_ratio": 0.6687898089171974,
+      "exact_ratio": null
+    },
+    {
+      "secret": "16",
+      "digits_observed": 8,
+      "digits_expected": 19.571428571428573,
+      "exact_observed": 0,
+      "exact_expected": 0.42857142857142855,
+      "digits_ratio": 0.4087591240875912,
+      "exact_ratio": 0.0
+    },
+    {
+      "secret": "10",
+      "digits_observed": 10,
+      "digits_expected": 25.428571428571427,
+      "exact_observed": 0,
+      "exact_expected": 0.42857142857142855,
+      "digits_ratio": 0.39325842696629215,
+      "exact_ratio": 0.0
+    },
+    {
+      "secret": "76",
+      "digits_observed": 11,
+      "digits_expected": 20.857142857142858,
+      "exact_observed": 1,
+      "exact_expected": 0.14285714285714288,
+      "digits_ratio": 0.5273972602739726,
+      "exact_ratio": 6.999999999999999
+    }
+  ],
+  "summary": {
+    "digits_observed_mean": 11.0,
+    "digits_expected_mean": 22.071428571428573,
+    "digits_ratio_pooled": 0.4983818770226537,
+    "exact_observed_mean": 0.25,
+    "exact_expected_mean": 0.25,
+    "exact_ratio_pooled": 1.0
+  }
+}

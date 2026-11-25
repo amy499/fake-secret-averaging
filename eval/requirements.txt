@@ -1,0 +1,29 @@
+# Core: enough for the registry, tests and `python run.py --dry-run` on CPU.
+numpy>=1.26
+pyyaml>=6.0
+pytest>=8.0
+
+# Models and data (needed for real runs on a GPU node).
+torch>=2.3
+transformers>=4.50          # Gemma 3 / Qwen3 chat templates
+accelerate>=0.30
+peft>=0.11                  # LoRA adapters (fsa, plain_finetune, selfci)
+datasets>=2.19              # HF benchmark loading
+huggingface_hub>=0.23
+safetensors>=0.4
+pyarrow>=14                 # team-protocol data files (parquet; core/data.py)
+# Team-protocol runs on the Slurm cluster and the PBS cluster use the exact pins in eval/requirements-gpu.txt instead
+# (torch 2.6.0+cu124, transformers 4.51.3, ...; installed by scripts/lib/setup_env.sh). The ranges here
+# are for laptops, tests and dry runs.
+
+# Google's IFEval checker (benchmarks/_vendor): core, not an extra: IFEval is a core protocol benchmark and these are small; pinned to the team protocol's versions).
+nltk==3.9.1
+langdetect==1.0.9
+absl-py==2.1.0
+immutabledict==4.2.1
+
+# ---- Extras: optional, install only when you use them --------------------------------------
+# [pyrit]   pyrit_crescendo attacker:           pip install pyrit
+# [analysis] analysis/internals and analysis/need_probe (parquet, plots, probes / TF-IDF; also
+#            needs torch + transformers above):
+#            pip install pandas pyarrow matplotlib scikit-learn

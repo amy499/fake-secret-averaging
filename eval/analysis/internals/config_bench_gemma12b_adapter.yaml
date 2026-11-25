@@ -1,0 +1,14 @@
+# TEMPLATE: the bench analysis with a PEFT/LoRA adapter (FSA, FSA+need, ...) on Gemma 3 12B.
+# Copy this file per adapter (e.g. config_bench_gemma12b_fsa.yaml), replace the two
+# REPLACE_ME paths with absolute paths, and change `name`. The run refuses to start while a
+# path does not exist, and checks the adapter's training_info.json (base model, train codes).
+#   python -m analysis.internals.fsa_codes --fsa-run <FSA run dir> --out <exclude file>
+#   python -m analysis.internals.run --config <your copy> --parts 1,2,3
+# Run the base config (config_bench_gemma12b.yaml) with the SAME exclude file
+# (secret.exclude_codes_file) so base and adapter runs use identical codes and seeds.
+base: analysis/internals/config_bench_gemma12b.yaml
+name: internals_bench_gemma12b_adapter
+model:
+  adapter: /REPLACE_ME/absolute/path/to/fsa_run/adapter          # PEFT adapter dir (adapter_config.json)
+secret:
+  exclude_codes_file: /REPLACE_ME/absolute/path/to/fsa_train_codes.txt

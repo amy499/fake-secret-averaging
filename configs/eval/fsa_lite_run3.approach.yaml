@@ -1,0 +1,50 @@
+# FSA-lite run3 (Amruta): the FSA objective with KEY-GUARDED-PAYLOAD training units (a password guards a
+# payload in our own templates; FSA on no-password and wrong-password turns, a USE term on correct-
+# password turns, need-KL x2), src/fsa_lite/lite/ (build_lite_run3.py, kgp_data.py,
+# configs/training/experiments/fsa_lite_*_run3.yaml, trained by src/fsa_lite/lite/v2_train.py). The adapter is the
+# checkpoint chosen on the synthetic dev split by the pre-registered rule (<run>/selection.json), fixed
+# before any benchmark run. Same bridge as FSA v1 (experiments/_bridges/fsa.py), its own approach name,
+# so its runs go to outputs/protocol/fsa_lite_run3/... and never touch fsa's or fsa_lite's.
+#   python run.py --approach fsa_lite_run3 --model gemma --suite core --variant technique
+#   adapter check first: sbatch --export=ALL,CHECK_ARGS="--approach fsa_lite_run3" scripts/slurm/harness_adapter_check.sbatch
+name: fsa_lite_run3
+owner: amruta
+# The original variant is approach fsa's (identical model options, checked by core/protocol.py and
+# recorded as original_from), so stats.team_table pairs these technique runs with the EXISTING fsa
+# original runs, as for fsa_lite.
+original_from: fsa
+defence:
+  name: fsa
+  merge: false
+models:
+  gemma:
+    # Must stay identical to fsa.approach.yaml models.gemma.model (checked).
+    model: {batch_size: 16, revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80}
+    defence:
+      # <run>/adapter of RUN_DIR outputs/training/fsa_lite_gemma12b_run3 (lite_train.sbatch cds to
+      # experiments/fake_secret_average): the selected checkpoint (selection.json, training_info.json).
+      adapter: {local: gemma_fsa_lite_run3}   # paths.local.yaml adapters.<key>
+      # sha256 of adapter_model.safetensors of the SELECTED adapter ("SELECTION:" line of the train log,
+      # selection.json adapter_sha256): FILL_ME until training is done. The technique variant refuses
+      # to run while it is a placeholder.
+      adapter_sha256: 324d8d8dc3659ffc45c12a38d5dc18e20e529b1b30bb3083100a227ce9f45d15
+  qwen:
+    # Must stay identical to fsa.approach.yaml models.qwen.model.
+    model: {batch_size: 16}
+    defence:
+      adapter: {local: qwen_fsa_lite_run3}   # paths.local.yaml adapters.<key>
+      # FILL_ME until the retrained adapter's "SELECTION:" line. The first Qwen run3 adapter (sha256
+      # 3ccd1f55..., commit 366c482) was DISCARDED: its training data shared a value with
+      # private/held_out_secrets.txt (the held-out guard caught it); the data was rebuilt with the
+      # held-out secrets excluded (build_lite_run3.py --exclude-secrets) and both models retrained.
+      adapter_sha256: d5f8ca21ce5751a7e585cf9e8b3aae9189753066abaad4e095ba2ff2d3e3720f
+synthetic:
+  # Secrets run3 used in training or model selection: the run3 built data's used_secrets.txt
+  # (Tensor Trust codes, KGP passwords and payloads, near-miss passwords, every fake-pool value and
+  # the dev split's passwords / payloads, and the near-misses training derives from fake passwords),
+  # copied by hand; never committed. REPLACED by the rebuilt data's used_secrets.txt (the first
+  # build's copy is kept beside it as fsa_lite_run3_used_secrets.discarded_heldout_overlap.txt).
+  used_secrets: private/fsa_lite_run3_used_secrets.txt
+secret_in_context:
+  # The same held-out file as fsa, so secret-in-context runs pair with fsa's originals too.
+  secrets: private/held_out_secrets.txt

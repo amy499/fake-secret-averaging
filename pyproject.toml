@@ -1,0 +1,82 @@
+[project]
+name = "fsa-lite"
+version = "0.1.0"
+description = "FSA-lite: a LoRA defence against in-context secret leakage (fake-secret averaging), with its evaluation harness and baselines."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Amruta Gurav" }]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "pyyaml>=6.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+# Real models and training (GPU nodes). The evaluation harness pins its own GPU stack in
+# eval/requirements-gpu.txt (installed by scripts/lib/setup_env.sh).
+ml = [
+    "torch>=2.3",
+    "transformers>=4.51",
+    "peft>=0.13",
+    "accelerate>=0.34",
+    "safetensors>=0.4",
+    "huggingface_hub>=0.23",
+    "pyarrow>=15",
+]
+# Google's IFEval checker (vendored in eval/benchmarks/_vendor and src/fsa_lite/fsa/utility/ifeval_checker).
+ifeval = ["absl-py>=2.0", "immutabledict>=4.0", "langdetect>=1.0.9", "nltk>=3.9"]
+# eval/analysis (parquet, plots, probes).
+analysis = ["pandas", "pyarrow", "matplotlib", "scikit-learn"]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[dependency-groups]
+# The FSA-lite training stack for `uv run --group ml` (scripts/lib/common_lite*.sh), pinned to the
+# versions of the original project's lock file, which the run2 / run3 adapters were trained with.
+ml = [
+    "torch==2.11.0",
+    "transformers==5.20.1",
+    "peft==0.21.2",
+    "accelerate==1.15.0",
+    "safetensors==0.8.0",
+    "huggingface-hub==2.2.0",
+    "tokenizers==0.23.3",
+    "pyarrow==26.0.1",
+    "absl-py==2.5.1",
+    "immutabledict==4.3.1",
+    "langdetect==1.0.9",
+    "nltk==3.10.4",
+]
+dev = ["pytest>=8.0", "ruff>=0.5"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+# torch: CPU wheels on Windows, CUDA 12.8 wheels on Linux GPU nodes.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'win32'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+
+[tool.pytest.ini_options]
+# FSA-lite training-side tests. The evaluation harness has its own suite: cd eval && python -m pytest
+testpaths = ["tests"]
+pythonpath = [".", "src/fsa_lite"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["src/fsa_lite/fsa/utility/ifeval_checker", "eval/benchmarks/_vendor"]

@@ -1,0 +1,20 @@
+{
+  "description": "sha256 of every published file in results/fsa_v1/ (this manifest excluded). The tables were exported by scripts/export_results.py from private per-run folders, which are not published.",
+  "exported_at": "2026-11-14T14:47:55",
+  "script": "scripts/export_results.py",
+  "list_file": "configs/training/export_runs.yaml",
+  "files": [
+    {
+      "name": "README.md",
+      "sha256": "a22e4f6e249f6fb803673aa5cd08fa3c9aa83266ef98dc2913826ac79f8a0220"
+    },
+    {
+      "name": "summary.csv",
+      "sha256": "34bc0e6035485d7dc54a790d8c30281ec285a04ac4517773c229ad824d9dfbe1"
+    },
+    {
+      "name": "summary.md",
+      "sha256": "a81bd49fb71a6c3d478cb62e072fc540a1e465a95ec05f4969a2704354759f93"
+    }
+  ]
+}

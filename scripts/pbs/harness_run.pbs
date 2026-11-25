@@ -1,0 +1,88 @@
+#!/bin/bash
+# The PBS cluster (PBS) job: one team-protocol run or one experiment config on one A100-SXM4-40GB,
+# or a setup / data job. The Slurm twin is scripts/slurm/harness_run.sbatch; both check the pinned stack.
+# Keep the checkout on scratch (REPO_ROOT in cluster.env) if the home quota is small: eval/.venv and
+# the data cache are inside it. Nothing here runs on a login node: submit with qsub.
+# Compute nodes have internet but no git binary (the commit is read from .git, scripts/lib/job_lib.sh).
+#
+# Modes (each a separate qsub; -o names the log file):
+#   qsub -l walltime=01:00:00 -v SETUP=1 -o <log> scripts/pbs/harness_run.pbs      # build .venv + tests (scripts/lib/setup_env.sh)
+#   qsub -l walltime=00:30:00 -v FETCH=1 -o <log> scripts/pbs/harness_run.pbs      # fetch + verify the pinned data
+#   qsub -l walltime=03:00:00 -v RUN_ARGS="--approach fsa --model gemma --suite core --variant original" -o <log> scripts/pbs/harness_run.pbs
+#   qsub -v RUN_ARGS="--config configs/hidden_code__none.yaml" -o <log> scripts/pbs/harness_run.pbs   # attack study
+#   qsub -v MODULE=analysis.internals.run,RUN_ARGS="--config analysis/internals/config.yaml" -o <log> scripts/pbs/harness_run.pbs
+#
+# Walltime: queue `normal` routes by walltime (on some sites a short queue takes walltime <= 01:00:00, a longer one the rest). The #PBS default
+# below (03:00:00) fits the core suite; pass -l walltime=... per suite. Estimates for Gemma-3-12B-it
+# bf16, batch 16, one A100-40GB, one variant (not measured on the PBS cluster; about 1.5-2x the expected
+# generation time; read the real time from the first run's log and adjust):
+#   core 03:00:00 | second 05:00:00 | synthetic 01:30:00 | secret_in_context 04:00:00 | all 12:00:00
+#   SETUP 01:00:00 (short-queue) | FETCH 00:30:00 (short-queue) | fsa_adapter_check.pbs 01:00:00 (short-queue)
+# Memory risk on a 40 GB A100: Gemma Tensor Trust hijacking ran out of memory at batch 16 in the
+# team's runs; the batch size is shared by both variants.
+#
+# -v rules: qsub -v splits on commas, so no value may contain one (use + in --benchmarks a+b);
+# separate several variables with commas, as above. -P below is $CLUSTER_USER's project; others pass
+# their own with qsub -P. ALLOW_UNPINNED=1 runs off the pins (recorded as not protocol-compliant).
+# HARNESS_HF_HUB_CACHE=/path overrides the model cache.
+#PBS -N harness
+#PBS -l select=1:ncpus=16:ngpus=1:mem=110gb
+#PBS -l walltime=03:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$(pwd)}"   # the repository root (scripts/submit_pbs.sh)
+# shellcheck disable=SC1091
+source scripts/lib/cluster_env.sh
+mkdir -p scripts/slurm/logs
+
+if [ -z "${PBS_JOBID:-}" ]; then
+    echo "refusing to run outside a PBS job (login node). Use: qsub scripts/pbs/harness_run.pbs" >&2
+    exit 2
+fi
+
+# The PBS cluster model cache: the existing one (models--google--gemma-3-12b-it directly under it, snapshot
+# 96b6f1ec...), never a new cache inside the repo. Override with -v HARNESS_HF_HUB_CACHE=/path.
+export HF_HUB_CACHE="${HARNESS_HF_HUB_CACHE:-${HF_HUB_CACHE:?set HF_HUB_CACHE in cluster.env}}"
+
+# shellcheck disable=SC1091
+source scripts/lib/job_lib.sh   # head_commit: reads .git, no git binary
+echo "job=$PBS_JOBID cluster=$HARNESS_CLUSTER node=$(hostname) commit=$(head_commit)"
+echo "HF_HUB_CACHE=$HF_HUB_CACHE (gemma-3-12b-it cached: $([ -d "$HF_HUB_CACHE/models--google--gemma-3-12b-it" ] && echo yes || echo no))"
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || true
+
+if [ "${SETUP:-0}" = 1 ]; then
+    exec bash scripts/lib/setup_env.sh   # builds eval/.venv
+fi
+if [ "${FETCH:-0}" = 1 ]; then
+    # data download + hash check, inside a job (no Python on the login node)
+    # shellcheck disable=SC1091
+    cd eval   # the harness: run.py, core/, ...
+    # shellcheck disable=SC1091
+    source env.sh
+    python -m core.data fetch
+    exec python -m core.data verify
+fi
+
+# Model runs load the pinned revision from the cache only (no download); SETUP / FETCH above keep
+# network access. HF_HUB_OFFLINE=0 in -v allows a download.
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"
+: "${RUN_ARGS:?set RUN_ARGS, e.g. qsub -v RUN_ARGS=\"--approach <name> --model gemma --variant original\" scripts/pbs/harness_run.pbs}"
+# shellcheck disable=SC1091
+cd eval   # the harness: run.py, core/, ...
+# shellcheck disable=SC1091
+source env.sh
+if ! python -m core.cluster check; then
+    [ "${ALLOW_UNPINNED:-0}" = 1 ] || { echo "stop: install the pinned stack (SETUP=1) or set ALLOW_UNPINNED=1" >&2; exit 3; }
+fi
+
+# shellcheck disable=SC2086  (RUN_ARGS is a word list on purpose)
+if [ -n "${MODULE:-}" ]; then
+    case "$MODULE" in
+        stats.*) python -m "$MODULE" $RUN_ARGS ;;  # CPU tools (stats.rescore, stats.team_table): no --device
+        *) python -m "$MODULE" $RUN_ARGS --device cuda ;;
+    esac
+else
+    python run.py $RUN_ARGS --device cuda
+fi

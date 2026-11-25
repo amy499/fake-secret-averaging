@@ -1,0 +1,38 @@
+# Dashboard/backend settings. Any FSA_* variable in .env overrides the matching key here.
+# Relative paths are resolved against .
+
+backend: mock            # mock | real   (FSA_BACKEND)
+
+api:
+  host: 127.0.0.1        # FSA_API_HOST (local only; do not use 0.0.0.0)
+  port: 8001             # FSA_API_PORT
+  cors_origins:          # FSA_CORS_ORIGINS as JSON; only the Vite dev server (port 5173)
+    - http://localhost:5173
+    - http://127.0.0.1:5173
+
+paths:
+  runs_dir: outputs/runs            # FSA_RUNS_DIR      (real backend)
+  mock_runs_dir: mock_data/runs     # FSA_MOCK_RUNS_DIR (mock backend)
+  utility_dir: outputs/utility     # FSA_UTILITY_DIR   (utility benchmarks; real backend only)
+
+playground:
+  default_n_samples: 20
+  max_n_samples: 200
+  default_temperature: 1.0
+  default_prompt: rand_20_2digit    # id from configs/training/prompts.yaml
+
+# Real backend (Hugging Face transformers). HF_TOKEN / HF_HOME may be set in .env.
+hf:
+  device: cpu              # FSA_HF_DEVICE (cpu | cuda | cuda:0 ...)
+  dtype: auto              # FSA_HF_DTYPE  (auto = bfloat16 on cuda, float32 on cpu)
+  max_new_tokens: 160      # FSA_HF_MAX_NEW_TOKENS (20 two-digit numbers need ~80 tokens; max 256)
+  batch_size: 8            # FSA_HF_BATCH_SIZE (replies generated per forward pass)
+
+# Attacker used to score leakage. Separate from the Playground model dropdowns.
+# In mock mode the local heuristic attacker is used instead (shown as attacker.in_use).
+attacker:
+  label: Qwen2.5-1.5B + LoRA
+  hf_id: Qwen/Qwen2.5-1.5B-Instruct  # FSA_ATTACKER_HF_ID
+  adapter: null                      # FSA_ATTACKER_ADAPTER (path to the trained LoRA, later)
+
+seed: 0                  # FSA_SEED

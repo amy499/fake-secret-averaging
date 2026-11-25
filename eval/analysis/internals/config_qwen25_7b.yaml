@@ -1,0 +1,11 @@
+# analysis/internals on Qwen2.5-7B-Instruct (pre-norm layer family): config.yaml with another model.
+#   python -m analysis.internals.run --config analysis/internals/config_qwen25_7b.yaml --parts 1,2,3
+#   python -m analysis.internals.run --config analysis/internals/config_qwen25_7b.yaml --parts 1,2,3 --dry-run
+# Everything not listed here (prompts, splits, counts, cost constants) comes from config.yaml.
+# The cost constants were set for Gemma 3 12B; a 7B model is faster, so the estimate is conservative.
+base: analysis/internals/config.yaml
+name: internals_qwen25_7b
+model: {name: qwen2.5-7b-instruct, device: cuda, dtype: bfloat16, attn_implementation: eager}
+
+dry_run:
+  model: {name: tiny-qwen2, device: cpu, dtype: float32, attn_implementation: eager}

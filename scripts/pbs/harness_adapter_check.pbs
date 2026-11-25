@@ -1,0 +1,49 @@
+#!/bin/bash
+# The PBS cluster (PBS) twin of scripts/slurm/harness_adapter_check.sbatch: load google/gemma-3-12b-it (pinned
+# revision, from the cache, offline) + the FSA adapter chosen for this cluster
+# (configs/eval/fsa.approach.yaml adapter.pbs-site, or -v FSA_ADAPTER_DIR=/path)
+# through the bridge, print the verification counts and the adapter sha256, then generate --n
+# greedy replies on secret_in_context items with and without the adapter and print whether each
+# pair is identical. Prints item keys, counts and hashes only: never secrets, prompts, replies or tokens.
+#
+#   qsub -o <log> scripts/pbs/harness_adapter_check.pbs                    # after the SETUP and FETCH jobs (scripts/pbs/harness_run.pbs)
+#   qsub -v CHECK_ARGS="--n 8 --benchmark gsm8k_team_sic" -o <log> scripts/pbs/harness_adapter_check.pbs
+#   qsub -v CHECK_ARGS="--model qwen --approach fsa_lite" -o <log> scripts/pbs/harness_adapter_check.pbs   # FSA-lite Qwen
+#   (an unpinned model, Qwen, is checked against the snapshot its cache's refs/main names)
+#   qsub -v FSA_ADAPTER_DIR=$SCRATCH/harness_adapters/gemma_fsa0 -o <log> scripts/pbs/harness_adapter_check.pbs
+# Walltime 01:00:00, so queue `normal` routes it to short-queue. No value in -v may contain a comma.
+# Never run it on a login node: it refuses outside a PBS job.
+#PBS -N fsa_adapter_check
+#PBS -l select=1:ncpus=16:ngpus=1:mem=110gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+
+set -euo pipefail
+
+cd "${PBS_O_WORKDIR:-$(pwd)}"   # the repository root (scripts/submit_pbs.sh)
+# shellcheck disable=SC1091
+source scripts/lib/cluster_env.sh
+mkdir -p scripts/slurm/logs
+
+if [ -z "${PBS_JOBID:-}" ]; then
+    echo "refusing to run outside a PBS job (login node). Use: qsub scripts/pbs/harness_adapter_check.pbs" >&2
+    exit 2
+fi
+
+export HF_HUB_CACHE="${HARNESS_HF_HUB_CACHE:-${HF_HUB_CACHE:?set HF_HUB_CACHE in cluster.env}}"
+
+# shellcheck disable=SC1091
+source scripts/lib/job_lib.sh   # head_commit: reads .git, no git binary
+echo "job=$PBS_JOBID cluster=$HARNESS_CLUSTER node=$(hostname) commit=$(head_commit)"
+echo "HF_HUB_CACHE=$HF_HUB_CACHE (gemma-3-12b-it cached: $([ -d "$HF_HUB_CACHE/models--google--gemma-3-12b-it" ] && echo yes || echo no))"
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || true
+
+export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"   # load the pinned revision from the cache, never download
+# shellcheck disable=SC1091
+cd eval   # the harness: run.py, core/, ...
+# shellcheck disable=SC1091
+source env.sh   # HF_TOKEN_PATH -> ~/.cache/huggingface/token (never read here)
+python -m core.cluster check || { echo "stop: the installed versions differ from eval/requirements-gpu.txt" >&2; exit 3; }
+
+# shellcheck disable=SC2086  (CHECK_ARGS is a word list on purpose)
+python -m experiments._bridges.fsa check --model gemma --device cuda ${CHECK_ARGS:-}

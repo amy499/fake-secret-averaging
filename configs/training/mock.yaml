@@ -1,0 +1,61 @@
+# Mock data settings. Everything produced from this file is SYNTHETIC (is_mock: true).
+# Used by src/fsa_lite/fsa_runtime/generators/mock.py (Playground) and scripts/make_mock_runs.py (mock runs).
+
+seed: 20261017                       # fixed: mock runs are byte-for-byte reproducible
+start_time: "2026-10-17T09:00:00"    # run i gets timestamp start_time + i minutes
+
+model:
+  id: gemma3-4b-it                   # registry id from configs/training/models.yaml
+  base: google/gemma-3-4b-it
+  n_layers: 34
+  global_every: 6                    # Gemma 3: 5 local (sliding-window) layers, then 1 global
+
+# Dip model: each digit of a "random" number is drawn from p(d) ∝ 1 − α·[d ∈ secret's digits].
+# α = 0 is uniform; α = 1 means the secret's digits never appear.
+dip_alpha:
+  base: 0.6
+  prompt_hiding: 0.35
+  prompt_hiding_strict: 0.7          # strongest-leakage condition: deeper dip than base
+  prompt_anti_suppression: 0.25      # told not to avoid the digits: shallower dip
+  b3: 0.03
+  random_layer: 0.45
+fsa_residual_alpha: 0.3              # fsa uses α = fsa_residual_alpha / k
+playground_fsa_k: 16                 # k assumed for the Playground "fsa" model
+
+numbers_per_reply: 20                # used when the prompt does not state a count
+
+# Mock evaluation (per run)
+eval:
+  prompt_id: rand_20_2digit
+  n_replies_per_secret: 10
+  heldout_fraction: 0.5              # secrets split into attacker-train / held-out eval
+  temperature: 1.0
+
+lora_defaults: {rank: 8, alpha: 16, dropout: 0.05, target_modules: [q_proj, v_proj]}
+
+# Mock runs written to mock_data/runs/. Utility numbers are invented placeholders.
+runs:
+  - name: mock_gemma3_4b_base
+    method: base
+    utility: {kl_to_base_nonsecret: 0.0, task_score: 0.81}
+  - name: mock_gemma3_4b_fsa_k1
+    method: fsa
+    k: 1
+    layers: [14, 15, 16, 17]
+    utility: {kl_to_base_nonsecret: 0.018, task_score: 0.80}
+  - name: mock_gemma3_4b_fsa_k4
+    method: fsa
+    k: 4
+    layers: [14, 15, 16, 17]
+    utility: {kl_to_base_nonsecret: 0.027, task_score: 0.80}
+  - name: mock_gemma3_4b_fsa_k16
+    method: fsa
+    k: 16
+    layers: [14, 15, 16, 17]
+    utility: {kl_to_base_nonsecret: 0.041, task_score: 0.79}
+  - name: mock_gemma3_4b_b3
+    method: b3
+    layers: [14, 15, 16, 17]
+    utility: {kl_to_base_nonsecret: 0.094, task_score: 0.76}
+  - name: mock_gemma3_4b_patching
+    method: patching

@@ -1,0 +1,57 @@
+# analysis/internals on the "bench" prompt set (numeric PasswordEval contexts with Tensor Trust,
+# MMLU / IFEval and number-list requests), Gemma 3 12B, base model. See README "Bench prompt set".
+#   python -m analysis.internals.bench_prompts --out outputs/internals_bench/prompts_bench.yaml   # login node, CPU, once
+#   python -m analysis.internals.run --config analysis/internals/config_bench_gemma12b.yaml --parts 1,2,3
+#   python -m analysis.internals.run --config analysis/internals/config_bench_gemma12b.yaml --parts 1,2,3 --dry-run
+# Everything not listed here comes from config.yaml (the hand-written run, unchanged).
+base: analysis/internals/config.yaml
+name: internals_bench_gemma12b
+model: {name: gemma3-12b-it, device: cuda, dtype: bfloat16, attn_implementation: eager, adapter: null}
+prompts: outputs/internals_bench/prompts_bench.yaml   # written by analysis.internals.bench_prompts
+
+bench:                            # analysis.internals.bench_prompts
+  seed: 2026
+  n_scenarios: 6                  # PasswordEval TEST-split scenarios, the same ones in every condition
+  max_attack_chars: 2000          # skip Tensor Trust attacks longer than this
+
+secret:
+  name: digits_4                  # harness generator, as in config.yaml
+  # Codes never to use (one per line), e.g. an FSA adapter's 50 train codes:
+  #   python -m analysis.internals.fsa_codes --fsa-run <FSA run> --out <file>
+  # Give the SAME file to the base run you compare against, so both use the same codes.
+  exclude_codes_file: null
+
+generation:                       # sampling as config.yaml; larger batches, shorter replies than the hand-written run
+  max_new_tokens: 200
+  batch_size: 32                  # rows of one prompt x many secrets (~40 GB peak on an A40 for the longest prompts)
+
+part1:
+  n_codes: 16                     # 1a: train codes swapped in under a fixed reply (hand-written run: 20)
+  fixed_replies: {T_attack: 3}    # 1a/3: fixed replies per prompt (default 1); more T replies for the leak split
+  probe: {n_train: 80, n_test: 40, prompts_per_condition: 4}   # 1b: per prompt; first 4 prompts of W, T, C, B
+  logit_lens_secrets: 10
+
+part2:
+  n_secrets: 10                   # test secrets per prompt, every secret condition
+
+part3:
+  n_codes: 16                     # same design as 1a
+
+leak_split:
+  min_per_side: 10                # split 1a / 2 by leaked vs not only with >= 10 replies on each side
+
+keep_cache: false                 # delete the 1b feature caches after probing (the Slurm cluster disk is tight)
+
+cost:                             # config.yaml's constants, plus:
+  step_s: 0.12                    # one decode step at batch 32 (0.095 at 16; an assumption, not measured)
+  reply_tokens: {A_needed: 60, W_withhold: 60, T_attack: 120, C_benign: 150, B_leak_prone: 150, D_no_secret: 120}
+  chars_per_token: 3.6            # pass time scales with prompt length from the prompts file (system + user)
+  template_tokens: 25
+  probe_ref_rows: 3200            # probe_s (900 s) is for the hand-written 1b: 2 x 6 prompts x 200 + 4 x 200 rows
+
+dry_run:
+  bench: {n_scenarios: 2}
+  generation: {batch_size: 4}
+  part1: {fixed_replies: {T_attack: 2}, probe: {prompts_per_condition: null}}
+  part3: {n_codes: 4}
+  leak_split: {min_per_side: 1}

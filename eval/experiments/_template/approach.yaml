@@ -1,0 +1,26 @@
+# Approach spec for the team protocol (core/protocol.py). Copy to experiments/<name>/approach.yaml.
+name: my_approach          # TODO: = the folder name
+owner: TODO                # your name
+# The technique variant. The original variant always runs defence `none` with the same model options.
+defence:
+  name: my_approach        # TODO: the name registered in defence.py
+  # any options your defence reads from self.cfg
+models:
+  gemma:                   # google/gemma-3-12b-it
+    model:                 # shared by both variants
+      batch_size: 16       # team protocol value; lower only if you run out of memory, and say so
+      # revision: <hub commit>   # optional pin; the loaded commit is recorded either way
+    defence: {}            # technique only, e.g. {adapter: path/to/adapter}
+  qwen:                    # Qwen/Qwen2.5-7B-Instruct
+    model:
+      batch_size: 16
+    defence: {}
+synthetic:
+  # One secret per line: every code or secret you used in training OR model selection. The file
+  # lives in private/ (git-ignored, never committed); the runner refuses to evaluate any of them.
+  used_secrets: private/used_secrets.txt
+secret_in_context:
+  # Held-out secrets for the report-only secret-in-context runs (mmlu/ifeval/gsm8k_team_sic), one per
+  # line, in private/ (git-ignored). None may appear in used_secrets above; the runner checks this
+  # before the model loads. Run both variants:  --suite secret_in_context --variant original|technique
+  secrets: private/held_out_secrets.txt

@@ -1,0 +1,65 @@
+# analysis/internals: what Gemma 3 12B does internally with a 4-digit secret in the system prompt.
+#   python -m analysis.internals.run --config analysis/internals/config.yaml --parts 1,2,3
+name: internals
+model: {name: gemma3-12b-it, device: cuda, dtype: bfloat16, attn_implementation: eager}
+secret: digits_4                 # harness generator: 1,200 codes, leading zeros kept
+prompts: analysis/internals/prompts.yaml
+output_dir: outputs               # run folder: outputs/<timestamp>_internals/ (or --run-dir)
+
+splits:
+  train: [0, 800]                 # secret indices [start, end)
+  test: [900, 1200]
+
+generation:                       # one reply per (prompt, secret); seed = harness reply_seed(secret_index, 0)
+  temperature: 1.0
+  top_p: 1.0
+  max_new_tokens: 300
+  min_new_tokens: 1               # stop tokens are masked before this many tokens (no empty replies)
+  batch_size: 16                  # rows of one prompt x many secrets (equal length, no padding)
+
+forward:
+  batch_size: 10                  # teacher-forced passes per batch
+  lens_chunk: 64                  # positions per logit-lens projection chunk
+
+part1:
+  n_codes: 20                     # 1a: train codes swapped in under a fixed reply
+  probe:
+    n_train: 200                  # 1b: train secrets per prompt (condition B)
+    n_test: 100                   # 1b: test secrets per prompt
+    first_reply_tokens: 50        # features = mean residual over the first 50 reply tokens
+    l2: 0.001
+    iters: 300
+    lr: 0.05
+    shuffle_seed: 2026
+  logit_lens_secrets: 10          # 1c: test secrets per B prompt (and paired D replies)
+
+part2:
+  n_secrets: 10                   # test secrets per prompt, conditions A, B, C
+
+part3:
+  n_codes: 20                     # 3a/3b: same design as 1a
+  top_neurons: 50
+
+keep_cache: true                  # keep pooled 1b features (cache/*.npz) after probing
+
+# A40 cost model for the printed estimate (seconds); see README "Cost".
+cost:
+  step_s: 0.095                   # one batched decode step (forward + seeded sampling of 16 rows)
+  reply_tokens: {A_needed: 30, B_leak_prone: 150, C_low_leak: 30, D_no_secret: 100}
+  prompt_tokens: 40
+  pass_light_s: 0.25              # teacher-forced pass with residual hooks
+  pass_heavy_s: 0.6               # + attention weights / components / neurons
+  lens_s: 0.5                     # + logit lens over all layers
+  probe_s: 900                    # all 1b probes on CPU
+  load_s: 300
+  job_limit_h: 6
+
+# --dry-run: tiny random Gemma-3 on CPU (char tokenizer), small counts.
+dry_run:
+  model: {name: tiny-gemma3, device: cpu, dtype: float32, attn_implementation: eager}
+  generation: {max_new_tokens: 12, min_new_tokens: 8, batch_size: 4}
+  forward: {batch_size: 4, lens_chunk: 8}
+  part1: {n_codes: 4, probe: {n_train: 12, n_test: 6, first_reply_tokens: 5, iters: 30}, logit_lens_secrets: 2}
+  part2: {n_secrets: 2}
+  part3: {n_codes: 4, top_neurons: 5}
+  prompts_per_condition: 2

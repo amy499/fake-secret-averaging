@@ -1,0 +1,49 @@
+# FSA on Gemma-3 12B with the FULL mixture: the fake set is every other training secret
+# (k = n_train - 1 = 49), in a fixed order, so the target has no sampling noise and the loss
+# has no noisy-target floor. Otherwise identical to fsa_gemma12b.yaml.
+# Cost: 49 frozen forward passes per example instead of 8, ~4.4x the time per step; at the
+# pessimistic end 500 steps do not fit one 6 h job, so the job stops itself (MAX_MINUTES)
+# and continues with RESUME (see slurm/README.md).
+name: fsa_gemma12b_fullmix
+seed: 0
+method: fsa
+model:
+  id: gemma3-12b-it
+target: mixture
+reply_source: offline
+fsa:
+  k: 49                  # must equal secrets.n_train - 1
+  fake_set: all_others   # deterministic: no random sampling of fakes
+lora:
+  layers: all            # replace with the patching-selected layers once available
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+secrets:
+  split_seed: 0          # = baseline_leakage.py --seed 0
+  n_train: 50            # = baseline_leakage.py --preset full (50 train + 50 held-out)
+  n_heldout: 50
+prompts:
+  train_system_methods: [base]
+  train_user_prompts: [rand_20_2digit, rand_10_2digit]
+  heldout_user_prompts: [lottery]   # training on it fails at startup
+generation:
+  max_new_tokens: 128
+  temperature: 1.0
+  offline_replies_per_prompt: 4
+train:
+  steps: 500
+  lr: 1.0e-4
+  warmup_steps: 10
+  batch_size: 1
+  grad_accum: 4          # effective batch 4 examples
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  dtype: auto            # bfloat16 on cuda
+  checkpoint_every: 50   # steps are slow (~15-36 s): lose at most ~30 min if a job dies
+utility:
+  weight: 0.0            # lambda for KL(adapted || frozen) on general prompts; 0 = off
+monitor:
+  every: 10
+  full_mixture_every: 25

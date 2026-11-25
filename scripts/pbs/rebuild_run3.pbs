@@ -1,0 +1,33 @@
+#!/bin/bash
+#PBS -N rebuild_run3
+#PBS -l select=1:ncpus=16:ngpus=1:mem=110gb
+#PBS -l walltime=00:45:00
+#PBS -j oe
+#
+# rebuild_run3.pbs (the PBS cluster): rebuild the run3 data with the harness held-out secrets excluded
+# (build_lite_run3.py --exclude-secrets $HELD_OUT), then the contamination and held-out checks; prints the
+# sha256 of units.jsonl, pools.json, used_secrets.txt and of the held-out FILE (never its lines) for the
+# The Slurm cluster / the PBS cluster comparison. Refuses to run over an existing build: rename the old folder first.
+#   mv $SCRATCH/fsa_lite_data/built_run3 $SCRATCH/fsa_lite_data/built_run3_old_heldout
+#   qsub -o $SCRATCH/fsa_main_logs/rebuild_run3.log $REPO_ROOT/scripts/pbs/rebuild_run3.pbs
+set -uo pipefail
+source "${REPO_ROOT:-${PBS_O_WORKDIR:-$PWD}}/scripts/lib/common_lite_pbs.sh"
+CONFIG_LITE="${CONFIG_LITE:-configs/training/experiments/fsa_lite_qwen7b_run3.yaml}"
+lite_pbs_require_job
+lite_pbs_banner
+lite_pbs_env || exit 1
+lite_pbs_require_venv || exit 1
+lite_pbs_require_inputs || exit 1
+[ "$BUILDER" = build_lite_run3.py ] || { echo "$CONFIG_LITE is not a run3 config"; exit 1; }
+[ ! -e "$BUILT" ] || { echo "$BUILT exists: rename it first (mv $BUILT ${BUILT}_old_heldout); nothing is deleted"; exit 1; }
+lite_pbs_build_args || exit 1
+echo "held-out file sha256: $(sha256sum "$HELD_OUT" | cut -c1-64)"
+"$PY" "$V2/build_lite_run3.py" --raw "$FSA_LITE_DATA/raw" --harness-data "$HARNESS_DATA" --out "$BUILT" \
+    "${BUILD_ARGS[@]}" || { echo "REBUILD FAILED"; exit 1; }
+"$PY" "$V2/contam_check.py" --data "$BUILT" --harness-data "$HARNESS_DATA" || { echo "contamination check FAILED"; exit 1; }
+lite_pbs_heldout_check || { echo "held-out check FAILED"; exit 1; }
+chmod 600 "$BUILT"/*
+echo "SHA256 (compare with the Slurm cluster):"
+(cd "$BUILT" && sha256sum units.jsonl pools.json used_secrets.txt)
+echo "used_secrets lines: $(wc -l < "$BUILT/used_secrets.txt")"
+echo "REBUILD OK: $BUILT"

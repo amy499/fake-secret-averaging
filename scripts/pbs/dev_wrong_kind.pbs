@@ -1,0 +1,29 @@
+#!/bin/bash
+#PBS -N dev_wrong_kind
+#PBS -l select=1:ncpus=16:ngpus=1:mem=110gb
+#PBS -l walltime=00:30:00
+#PBS -j oe
+#
+# dev_wrong_kind.pbs (the PBS cluster): as dev_wrong_kind.sbatch, for the Qwen run3 run (short-queue: <= 1 h).
+# REPORT-ONLY, POST-HOC; CPU only (no tokenizer, no model). RUNS = NAME=RUN_DIR entries joined by +.
+#   qsub -v RUNS=run3=outputs/training/fsa_lite_qwen7b_run3,OUT_NAME=qwen -o $SCRATCH/fsa_main_logs/dev_wrong_kind_qwen.log $REPO_ROOT/scripts/pbs/dev_wrong_kind.pbs
+set -uo pipefail
+source "${REPO_ROOT:-${PBS_O_WORKDIR:-$PWD}}/scripts/lib/common_lite_pbs.sh"
+CONFIG_LITE="${CONFIG_LITE:-configs/training/experiments/fsa_lite_qwen7b_run3.yaml}"
+RUNS="${RUNS:-run3=outputs/training/fsa_lite_qwen7b_run3}"
+OUT_NAME="${OUT_NAME:-qwen}"
+lite_pbs_require_job
+lite_pbs_banner
+lite_pbs_env || exit 1
+lite_pbs_require_venv || exit 1
+lite_cfg_data || exit 1
+[ -f "$BUILT/units.jsonl" ] || { echo "no units.jsonl in $BUILT"; exit 1; }
+echo "data sha256: $(cd "$BUILT" && sha256sum units.jsonl | cut -c1-16)"
+RUN_ARGS=()
+IFS='+' read -r -a ENTRIES <<< "$RUNS"
+for e in "${ENTRIES[@]}"; do
+    [ -f "${e#*=}/dev_replies.jsonl" ] || { echo "no dev_replies.jsonl in ${e#*=}"; exit 1; }
+    RUN_ARGS+=(--run "$e")
+done
+"$PY" "$V2/dev_wrong_kind.py" --data "$BUILT" "${RUN_ARGS[@]}" \
+    --out "outputs/diagnostics/dev_wrong_kind/$OUT_NAME.json"

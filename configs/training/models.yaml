@@ -1,0 +1,71 @@
+# Playground registry (GET /api/models), two independent axes: base model x method.
+# A Playground panel picks one of each. Disabled entries are shown greyed out and rejected by
+# /api/generate. The attacker is NOT here: it is a separate setting (configs/training/app.yaml: attacker).
+# In mock mode all base models behave identically; only the method changes the mock output.
+#
+# Real backend (FSA_BACKEND=real): base and prompt_hiding run on the plain base model. fsa, b3
+# and random_layer need a trained LoRA adapter per base model; add it under `adapters`, e.g.
+#   adapters: {fsa: outputs/adapters/qwen05_fsa_k8}
+# (path relative to the repository root). Without one the API answers 501.
+
+base_models:
+  - id: qwen2.5-0.5b-instruct
+    label: Qwen2.5 0.5B Instruct (local test)
+    hf_id: Qwen/Qwen2.5-0.5B-Instruct
+    n_layers: 24
+    enabled: true
+    adapters: {}
+
+  - id: gemma3-4b-it
+    label: Gemma 3 4B Instruct
+    hf_id: google/gemma-3-4b-it
+    n_layers: 34
+    enabled: true
+
+  - id: gemma3-12b-it
+    label: Gemma 3 12B Instruct
+    hf_id: google/gemma-3-12b-it
+    n_layers: 48
+    enabled: true
+
+  - id: qwen2.5-7b-instruct
+    label: Qwen2.5 7B Instruct
+    hf_id: Qwen/Qwen2.5-7B-Instruct
+    n_layers: 28
+    enabled: true
+
+  - id: olmo3-7b-instruct
+    label: OLMo 3 7B Instruct (optional)
+    hf_id: allenai/Olmo-3-7B-Instruct    # verify exact repo id before use
+    n_layers: 32
+    optional: true
+    enabled: false
+
+methods:
+  - id: base
+    label: Base (no technique)
+    enabled: true
+
+  - id: prompt_hiding
+    label: Prompt-only hiding
+    enabled: true
+
+  - id: prompt_hiding_strict
+    label: Prompt-only hiding (strict policy)
+    enabled: true
+
+  - id: prompt_anti_suppression
+    label: Prompt-only anti-suppression
+    enabled: true
+
+  - id: fsa
+    label: Fake-secret average
+    enabled: true
+
+  - id: b3
+    label: B3 (match no-secret model)
+    enabled: false         # until trained
+
+  - id: random_layer
+    label: Random-layer LoRA
+    enabled: false         # until trained

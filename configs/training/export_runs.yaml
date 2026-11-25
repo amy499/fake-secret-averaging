@@ -1,0 +1,57 @@
+# Runs exported to results/ by scripts/export_results.py: aggregate metrics only (config.yaml,
+# metrics.json, diagnostics.json, likelihood_attack*.json; utility_metrics.json + config.yaml),
+# committed to git. Raw generations, logs and adapter weights stay in outputs/ on the Slurm cluster.
+# All runs: Gemma-3 12B, 50 held-out secrets. `label` is shown in results/README.md.
+
+runs:
+  # rand_20_2digit (the training prompt)
+  - id: 20261019-142249_baseline_gemma3-12b-it_base
+    label: rand20 / base
+  - id: 20261019-144738_baseline_gemma3-12b-it_prompt_hiding
+    label: rand20 / prompt hiding
+  - id: 20261019-153905_baseline_gemma3-12b-it_prompt_hiding_strict
+    label: rand20 / prompt hiding (strict)
+  - id: 20261019-151532_baseline_gemma3-12b-it_prompt_anti_suppression
+    label: rand20 / prompt anti-suppression
+  - id: 20261024-052409_baseline_gemma3-12b-it_fsa
+    label: rand20 / FSA k=8
+  - id: 20261024-231807_baseline_gemma3-12b-it_fsa
+    label: rand20 / FSA k=49 (old fullmix)
+  - id: 20261025-231007_baseline_gemma3-12b-it_b3
+    label: rand20 / B3 baseline (match the no-secret model)
+  - id: 20261108-202641_baseline_gemma3-12b-it_fsa
+    label: rand20 / FSA k=49 multiprompt
+  # lottery (held-out prompt)
+  - id: 20261107-222330_baseline_gemma3-12b-it_base
+    label: lottery / base
+  - id: 20261107-230410_baseline_gemma3-12b-it_fsa
+    label: lottery / FSA k=49 (old fullmix)
+  - id: 20261108-151123_baseline_gemma3-12b-it_fsa
+    label: lottery / FSA k=49 multiprompt
+  # unpredictabench_2digit (held-out prompt set, eval_only)
+  - id: 20261108-151352_baseline_gemma3-12b-it_base
+    label: unpredictabench / base
+  - id: 20261108-194245_baseline_gemma3-12b-it_fsa
+    label: unpredictabench / FSA k=49 multiprompt
+  - id: 20261109-103335_baseline_gemma3-12b-it_fsa
+    label: unpredictabench / FSA k=49 (old fullmix)
+
+  # PasswordEval-style password-gated prompt, 4-digit codes (digits4, MVP), held-out prompt
+  - id: 20261114-051157_baseline_gemma3-12b-it_base
+    label: pe4 lottery_4digit / base
+  - id: 20261114-122212_baseline_gemma3-12b-it_fsa
+    label: pe4 lottery_4digit / FSA lambda=0 (pe4 fullmix)
+  - id: 20261114-124824_baseline_gemma3-12b-it_fsa
+    label: pe4 lottery_4digit / FSA lambda=1 (need term)
+
+utility:
+  - id: 20261108-210031_gemma3-12b-it_base
+    label: utility / base
+  - id: 20261108-214829_gemma3-12b-it_fsa
+    label: utility / FSA k=49 (old fullmix)
+  - id: 20261113-160355_gemma3-12b-it_base
+    label: utility pe4 / base
+  - id: 20261114-013422_gemma3-12b-it_fsa
+    label: utility pe4 / FSA lambda=0 (pe4 fullmix)
+  - id: 20261114-023540_gemma3-12b-it_fsa
+    label: utility pe4 / FSA lambda=1 (need term)

@@ -1,0 +1,32 @@
+# Pinned GPU stack for team-protocol runs, the SAME on the Slurm cluster (A40) and the PBS cluster (A100).
+# Python 3.11. Install inside a job with scripts/lib/setup_env.sh (it installs torch from the CUDA 12.4
+# index first, then this file, then runs `python -m core.cluster check` and the tests).
+# Runs whose versions differ are not paired by stats/team_table.py, and summary.json records
+# any difference from this file (environment.pins).
+#
+# Why these versions:
+#   torch 2.6.0 + cu124: CUDA 12.4 wheels run on any CUDA-12 driver. The Slurm cluster's driver supports up to
+#     12.8 (the FSA-lite training environment), so a CUDA 12 driver is enough. Not torch 2.1.0:
+#     bf16 there corrupted Qwen's long answers in the team's runs (GSM8K .344 in bf16 vs .906 in fp32).
+#   transformers / tokenizers / huggingface_hub / safetensors / accelerate / numpy: the team
+#     protocol's pins, so original-model rows can match the published reference runs.
+#   nltk / langdetect / absl-py / immutabledict: Google's IFEval checker, the team protocol's versions.
+#   peft 0.15.2: a release from the same month as transformers 4.51.3.
+# Not yet installed together on either cluster from this branch: scripts/lib/setup_env.sh is that check.
+torch==2.6.0
+transformers==4.51.3
+tokenizers==0.21.1
+huggingface_hub==0.30.2
+safetensors==0.5.3
+accelerate==0.34.0
+peft==0.15.2
+numpy==1.26.4
+pyarrow==19.0.1
+datasets==3.5.0
+jinja2==3.1.6
+pyyaml==6.0.2
+pytest==8.3.5
+nltk==3.9.1
+langdetect==1.0.9
+absl-py==2.1.0
+immutabledict==4.2.1

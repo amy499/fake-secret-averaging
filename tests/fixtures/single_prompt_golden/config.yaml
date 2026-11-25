@@ -1,0 +1,44 @@
+name: mock_golden
+seed: 1
+method: base
+run_type: evaluation
+model:
+  id: qwen2.5-0.5b-instruct
+  base: Qwen/Qwen2.5-0.5B-Instruct
+  n_layers: 24
+eval:
+  prompts:
+  - rand_20_2digit
+  n_numbers_expected:
+    rand_20_2digit: 20
+  n_secrets: 4
+  n_train_secrets: 4
+  n_replies_per_secret: 3
+  temperature: 1.0
+  attacker: heuristic-digit-number
+  attacker_params:
+    alpha: 0.8
+    beta_exact: 4.0
+    beta_neighbour: 0.25
+    beta_reversed: -1.75
+  attacker_alpha: 0.8
+  eval_split: heldout
+  secrets:
+    train:
+    - '42'
+    - '99'
+    - '65'
+    - '44'
+    heldout:
+    - '68'
+    - '16'
+    - '10'
+    - '76'
+  significance:
+    n_permutations: 50
+    n_bootstrap: 50
+    seed: 1
+generation:
+  backend: mock
+  max_new_tokens: 160
+script: scripts/baseline_leakage.py

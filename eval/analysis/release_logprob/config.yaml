@@ -1,0 +1,9 @@
+# analysis/release_logprob (H4, report-only): log p(info | prompt, release frame) with and without the
+# approach's adapter, per PasswordEval turn. One model per job (--model gemma | qwen).
+#   The Slurm cluster:  sbatch --time=01:00:00 --export=ALL,MODULE=analysis.release_logprob.run,EXTRA_ARGS="--model gemma" scripts/slurm/harness_run.sbatch analysis/release_logprob/config.yaml
+#   The PBS cluster: qsub -l walltime=01:00:00 -v MODULE=analysis.release_logprob.run,RUN_ARGS="--config analysis/release_logprob/config.yaml --model qwen" scripts/pbs/harness_run.pbs
+#   post-hoc ablation (Gemma, the Slurm cluster): EXTRA_ARGS="--model gemma --approach fsa_lite_run3_nouse" -> <output_dir>/gemma/fsa_lite_run3_nouse/
+approach: fsa_lite_run3        # adapter + sha256 from configs/eval/fsa_lite_run3.approach.yaml (checked by the bridge)
+n_scenarios: 200               # PasswordEval scenarios drawn (seeded) from the 500; each is scored in ALL turns
+seed: 2026
+output_dir: outputs/diagnostics/release_logprob

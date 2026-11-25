@@ -1,0 +1,77 @@
+# FSA on 4-digit codes with PasswordEval-style prompts (Gemma-3 12B): the CONTROL for
+# fsa_gemma12b_pe4_fullmix_need.yaml, identical except need.weight = 0.0 (the need term is
+# still computed on the same need items and logged, without gradient; the FSA examples are
+# the same in both runs, draw for draw).
+#
+# Secrets: digits4, the 100 fixed 4-digit codes of configs/training/secrets/digits4_100.txt (the
+# attacker knows the code is one of them); split 50 train / 50 held-out with split_seed 0, the
+# same as baseline_leakage / utility_eval --secret-type digits4 --seed 0 --preset full.
+# System prompt: pe_base (digits4_system_templates): the code plus its password (pe_password).
+#
+# FSA term (mixture over all 49 other train codes, each with its own password) on the
+# leak-prone prompts AND the withhold prompts (no password: the code should not come out).
+# Need term on the needed prompts (compliant: the user gives the password; verify: "is {code}
+# the code?", real code for half, another train code for half): KL(adapted || frozen) with the
+# frozen model holding the SAME real code, on the frozen model's own cached replies.
+# total = fsa_term + need.weight * need_term.
+#
+# Cost per step: 4 FSA micro-batches x (49 frozen + 1 adapted fwd/bwd) + 2 need micro-batches
+# x (1 frozen + 1 adapted forward, no backward in this control): ~+2% over FSA alone.
+# train_fsa prints the estimate at start; MAX_MINUTES = 330 + RESUME covers the rest.
+name: fsa_gemma12b_pe4_fullmix
+seed: 0
+method: fsa
+model:
+  id: gemma3-12b-it
+target: mixture
+reply_source: offline
+fsa:
+  k: 49                  # must equal secrets.n_train - 1
+  fake_set: all_others   # deterministic: no random sampling of fakes
+lora:
+  layers: all            # replace with the patching-selected layers once available
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+secrets:
+  type: digits4
+  split_seed: 0
+  n_train: 50
+  n_heldout: 50
+prompts:
+  train_system_methods: [pe_base]
+  # leak-prone + withhold prompts: the FSA (mixture) term
+  train_user_prompts: [rand_20_4digit, rand_10_4digit,
+                       withhold_forgot_1, withhold_forgot_2, withhold_forgot_3]
+  # training on any of these fails at startup (they are also eval-only in prompts.yaml)
+  heldout_user_prompts: [lottery_4digit, verify_access_code_4digit, compliant_eval_1,
+                         compliant_eval_2, withhold_eval_1, withhold_eval_2]
+generation:
+  max_new_tokens: 128
+  temperature: 1.0
+  offline_replies_per_prompt: 4
+train:
+  steps: 500
+  lr: 1.0e-4
+  warmup_steps: 10
+  batch_size: 1
+  grad_accum: 4          # 4 FSA examples per step (+ 2 need examples, below)
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  dtype: auto            # bfloat16 on cuda
+  checkpoint_every: 50
+utility:
+  weight: 0.0
+need:
+  weight: 0.0            # control: need term measured and logged, no gradient
+  prompts: [compliant_1, compliant_2, compliant_3, verify4_1, verify4_2, verify4_3]
+  every: 1               # need micro-batches on every step
+  fraction: 0.3          # -> round(4 * 0.3 / 0.7) = 2 need micro-batches per step (2 of 6 = 33%)
+monitor:
+  every: 10
+  full_mixture_every: 25
+  need_every: 50         # verify acc / compliant reveal / withhold leak on 8 train codes
+  need_secrets: 8
+  need_max_new_tokens: 24
+  withhold_prompts: [withhold_forgot_1, withhold_forgot_2, withhold_forgot_3]

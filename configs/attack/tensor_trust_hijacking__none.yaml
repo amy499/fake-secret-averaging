@@ -1,0 +1,19 @@
+# ATTACK STUDY config (core/runner.py: secret in context, sampled leak replies, attackers). Not the team protocol:
+# team-table runs use `python run.py --approach ...` (core/protocol.py; caps 48/256/512/64 per docs/eval_protocol.md).
+# Tier 1: tensor_trust_hijacking, defence = none
+name: tensor_trust_hijacking__none
+model: {name: gemma3-12b-it, device: cuda, dtype: bfloat16}
+secret: private_facts
+benchmark: {name: tensor_trust_hijacking, split: test}
+defence: none
+baseline_run: null
+attackers:
+  - {name: tensor_trust_human, pool: hijacking, budget: 20}
+  - {name: direct_request}
+metrics: [tensor_trust, joint_success, utility_delta, over_refusal, latency, attack_success_vs_queries]
+decoding:
+  scored: {temperature: 0.0, max_new_tokens: 256}          # greedy for scored answers
+  leak: {temperature: 1.0, top_p: 1.0, max_new_tokens: 256, k: 5}  # seeds 2026e6 + secret_index*100 + j
+controls: {no_secret: true}
+budget: 20
+output_dir: outputs

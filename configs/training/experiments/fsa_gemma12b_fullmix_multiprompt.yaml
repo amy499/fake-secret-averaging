@@ -1,0 +1,69 @@
+# Full-mixture FSA (k = 49, all_others) on Gemma-3 12B with varied training prompts, to test
+# whether FSA generalises to unseen prompts. Identical to fsa_gemma12b_fullmix.yaml (model, seed,
+# split, k, LoRA and training settings) except: 13 training user prompts (the 2 originals, 8
+# Subliminal Learning prompts, 3 written by the team; see configs/training/prompts.yaml), held-out prompts
+# = lottery + the eval_only prompt set unpredictabench_2digit, and 2 offline replies per
+# (secret, prompt) instead of 4 (650 pairs instead of 100). Offline replies are generated the
+# first time a pair is drawn. Expected ~4 h; the job still stops itself at MAX_MINUTES and
+# continues with RESUME if needed (see slurm/README.md).
+name: fsa_gemma12b_fullmix_multiprompt
+seed: 0
+method: fsa
+model:
+  id: gemma3-12b-it
+target: mixture
+reply_source: offline
+fsa:
+  k: 49                  # must equal secrets.n_train - 1
+  fake_set: all_others   # deterministic: no random sampling of fakes
+lora:
+  layers: all            # replace with the patching-selected layers once available
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+secrets:
+  split_seed: 0          # = baseline_leakage.py --seed 0
+  n_train: 50            # = baseline_leakage.py --preset full (50 train + 50 held-out)
+  n_heldout: 50
+prompts:
+  train_system_methods: [base]
+  train_user_prompts:
+    - rand_20_2digit
+    - rand_10_2digit
+    - subl_r0_number_list
+    - subl_r1_one_per_line
+    - subl_r35_separate_lines
+    - subl_r6_semicolon_list
+    - subl_r186_parentheses
+    - subl_r14_space_separated
+    - subl_r18_comma_separated
+    - subl_r58_brackets
+    - jersey_numbers_8
+    - basketball_quarters_5
+    - story_ages_6
+  heldout_user_prompts:   # training on any of them fails at startup
+    - lottery
+    - ub_binomial_120_l25
+    - ub_binomial_qc_120_l394
+    - ub_hypergeom_ballots_l27
+    - ub_hypergeom_boxes_l396
+generation:
+  max_new_tokens: 128
+  temperature: 1.0
+  offline_replies_per_prompt: 2
+train:
+  steps: 500
+  lr: 1.0e-4
+  warmup_steps: 10
+  batch_size: 1
+  grad_accum: 4          # effective batch 4 examples
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  dtype: auto            # bfloat16 on cuda
+  checkpoint_every: 50   # steps are slow (~15-36 s): lose at most ~30 min if a job dies
+utility:
+  weight: 0.0            # lambda for KL(adapted || frozen) on general prompts; 0 = off
+monitor:
+  every: 10
+  full_mixture_every: 25

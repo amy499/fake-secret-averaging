@@ -1,0 +1,23 @@
+#!/bin/bash
+#PBS -N train_signal_audit
+#PBS -l select=1:ncpus=16:ngpus=1:mem=110gb
+#PBS -l walltime=00:30:00
+#PBS -j oe
+#
+# train_signal_audit.pbs (the PBS cluster): as train_signal_audit.sbatch, for the Qwen run3 run (short-queue: <= 1 h).
+# H3 report-only audit, CPU only (tokenizer offline from the PBS cluster model cache, pinned revision; no model).
+#   qsub -v RUN_DIR=outputs/training/fsa_lite_qwen7b_run3 -o $SCRATCH/fsa_main_logs/train_signal_audit_qwen.log $REPO_ROOT/scripts/pbs/train_signal_audit.pbs
+set -uo pipefail
+source "${REPO_ROOT:-${PBS_O_WORKDIR:-$PWD}}/scripts/lib/common_lite_pbs.sh"
+CONFIG_LITE="${CONFIG_LITE:-configs/training/experiments/fsa_lite_qwen7b_run3.yaml}"
+RUN_DIR="${RUN_DIR:-outputs/training/fsa_lite_qwen7b_run3}"
+lite_pbs_require_job
+lite_pbs_banner
+lite_pbs_env || exit 1
+lite_pbs_require_venv || exit 1
+lite_cfg_data || exit 1
+[ -f "$RUN_DIR/train_log.jsonl" ] || { echo "no train_log.jsonl in $RUN_DIR"; exit 1; }
+echo "data sha256: $(cd "$BUILT" && sha256sum units.jsonl pools.json | cut -c1-16 | tr '\n' ' ')"
+NAME="$(basename "$CONFIG_LITE" .yaml)"
+"$PY" "$V2/train_signal_audit.py" --config "$CONFIG_LITE" --run-dir "$RUN_DIR" \
+    --out "outputs/diagnostics/train_signal_audit/$NAME.json"

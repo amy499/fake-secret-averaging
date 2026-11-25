@@ -1,0 +1,346 @@
+name: internals_bench_gemma12b_fsa0
+model:
+  name: gemma3-12b-it
+  device: cuda
+  dtype: bfloat16
+  attn_implementation: eager
+  adapter: $REPO_ROOT/outputs/training/20261113-165343_fsa_gemma12b_pe4_fullmix/adapter
+secret:
+  name: digits_4
+  exclude_codes_file: $REPO_ROOT/eval/outputs/internals_bench/fsa_train_codes.txt
+prompts: $REPO_ROOT/eval/outputs/internals_bench_gemma12b_fsa0/prompts_bench.yaml
+output_dir: outputs
+splits:
+  train:
+  - 0
+  - 800
+  test:
+  - 900
+  - 1200
+generation:
+  temperature: 1.0
+  top_p: 1.0
+  max_new_tokens: 200
+  min_new_tokens: 1
+  batch_size: 32
+forward:
+  batch_size: 10
+  lens_chunk: 64
+part1:
+  n_codes: 16
+  probe:
+    n_train: 80
+    n_test: 40
+    first_reply_tokens: 50
+    l2: 0.001
+    iters: 300
+    lr: 0.05
+    shuffle_seed: 2026
+    prompts_per_condition: 4
+  logit_lens_secrets: 10
+  fixed_replies:
+    T_attack: 3
+part2:
+  n_secrets: 10
+part3:
+  n_codes: 16
+  top_neurons: 50
+keep_cache: false
+cost:
+  step_s: 0.12
+  reply_tokens:
+    A_needed: 60
+    B_leak_prone: 150
+    C_low_leak: 30
+    D_no_secret: 120
+    W_withhold: 60
+    T_attack: 120
+    C_benign: 150
+  prompt_tokens: 40
+  pass_light_s: 0.25
+  pass_heavy_s: 0.6
+  lens_s: 0.5
+  probe_s: 900
+  load_s: 300
+  job_limit_h: 6
+  chars_per_token: 3.6
+  template_tokens: 25
+  probe_ref_rows: 3200
+bench:
+  seed: 2026
+  n_scenarios: 6
+  max_attack_chars: 2000
+leak_split:
+  min_per_side: 10
+is_dry_run: false
+exclude_codes:
+  file: $REPO_ROOT/eval/outputs/internals_bench/fsa_train_codes.txt
+  n: 50
+  sha256: 229f6c1901eb5ac491b04e2ae55f42bcecc7658045bddbff5741411ea37eb4e5
+  n_excluded:
+    train: 3
+    test: 1
+    all: 4
+adapter_info:
+  path: $REPO_ROOT/outputs/training/20261113-165343_fsa_gemma12b_pe4_fullmix/adapter
+  base_model: gemma3-12b-it
+  base_hf_id: google/gemma-3-12b-it
+  loaded: true
+  training_info:
+    run_id: 20261113-165343_fsa_gemma12b_pe4_fullmix
+    method: fsa
+    target: mixture
+    base_model: gemma3-12b-it
+    hf_id: google/gemma-3-12b-it
+    secret_type: digits4
+    step: 500
+    k: 49
+    n_train_secrets: 50
+    need_term: true
+parts_requested:
+- 1a
+- 1b
+- 1c
+- '2'
+- 3a
+- 3b
+secret_sha256: 4d707ff791114b8f3034453531ea51f37a831867d1de43c560b69b135ec7765b
+tokenisation:
+  span_tokens: 4
+  digit_pos: prompt-specific (first digit at token 25-28)
+  n_codes: 1196
+  prompts_checked: 36
+  digit_pos_by_prompt:
+    A_needed/A0:
+    - 25
+    - 26
+    - 27
+    - 28
+    A_needed/A1:
+    - 25
+    - 26
+    - 27
+    - 28
+    A_needed/A2:
+    - 27
+    - 28
+    - 29
+    - 30
+    A_needed/A3:
+    - 28
+    - 29
+    - 30
+    - 31
+    A_needed/A4:
+    - 26
+    - 27
+    - 28
+    - 29
+    A_needed/A5:
+    - 26
+    - 27
+    - 28
+    - 29
+    W_withhold/W0:
+    - 25
+    - 26
+    - 27
+    - 28
+    W_withhold/W1:
+    - 25
+    - 26
+    - 27
+    - 28
+    W_withhold/W2:
+    - 27
+    - 28
+    - 29
+    - 30
+    W_withhold/W3:
+    - 28
+    - 29
+    - 30
+    - 31
+    W_withhold/W4:
+    - 26
+    - 27
+    - 28
+    - 29
+    W_withhold/W5:
+    - 26
+    - 27
+    - 28
+    - 29
+    T_attack/T0:
+    - 25
+    - 26
+    - 27
+    - 28
+    T_attack/T1:
+    - 25
+    - 26
+    - 27
+    - 28
+    T_attack/T2:
+    - 27
+    - 28
+    - 29
+    - 30
+    T_attack/T3:
+    - 28
+    - 29
+    - 30
+    - 31
+    T_attack/T4:
+    - 26
+    - 27
+    - 28
+    - 29
+    T_attack/T5:
+    - 26
+    - 27
+    - 28
+    - 29
+    C_benign/C0_mmlu:
+    - 25
+    - 26
+    - 27
+    - 28
+    C_benign/C0_ifeval:
+    - 25
+    - 26
+    - 27
+    - 28
+    C_benign/C1_mmlu:
+    - 25
+    - 26
+    - 27
+    - 28
+    C_benign/C1_ifeval:
+    - 25
+    - 26
+    - 27
+    - 28
+    C_benign/C2_mmlu:
+    - 27
+    - 28
+    - 29
+    - 30
+    C_benign/C2_ifeval:
+    - 27
+    - 28
+    - 29
+    - 30
+    C_benign/C3_mmlu:
+    - 28
+    - 29
+    - 30
+    - 31
+    C_benign/C3_ifeval:
+    - 28
+    - 29
+    - 30
+    - 31
+    C_benign/C4_mmlu:
+    - 26
+    - 27
+    - 28
+    - 29
+    C_benign/C4_ifeval:
+    - 26
+    - 27
+    - 28
+    - 29
+    C_benign/C5_mmlu:
+    - 26
+    - 27
+    - 28
+    - 29
+    C_benign/C5_ifeval:
+    - 26
+    - 27
+    - 28
+    - 29
+    B_leak_prone/B0:
+    - 25
+    - 26
+    - 27
+    - 28
+    B_leak_prone/B1:
+    - 25
+    - 26
+    - 27
+    - 28
+    B_leak_prone/B2:
+    - 27
+    - 28
+    - 29
+    - 30
+    B_leak_prone/B3:
+    - 28
+    - 29
+    - 30
+    - 31
+    B_leak_prone/B4:
+    - 26
+    - 27
+    - 28
+    - 29
+    B_leak_prone/B5:
+    - 26
+    - 27
+    - 28
+    - 29
+layer_family: gemma
+layer_types:
+- sliding
+- sliding
+- sliding
+- sliding
+- sliding
+- global
+- sliding
+- sliding
+- sliding
+- sliding
+- sliding
+- global
+- sliding
+- sliding
+- sliding
+- sliding
+- sliding
+- global
+- sliding
+- sliding
+- sliding
+- sliding
+- sliding
+- global
+- sliding
+- sliding
+- sliding
+- sliding
+- sliding
+- global
+- sliding
+- sliding
+- sliding
+- sliding
+- sliding
+- global
+- sliding
+- sliding
+- sliding
+- sliding
+- sliding
+- global
+- sliding
+- sliding
+- sliding
+- sliding
+- sliding
+- global
+sliding_window: 1024
+n_layers: 48
+n_heads: 16

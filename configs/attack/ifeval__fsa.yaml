@@ -1,0 +1,21 @@
+# ATTACK STUDY config (core/runner.py: secret in context, sampled leak replies, attackers). Not the team protocol:
+# team-table runs use `python run.py --approach ...` (core/protocol.py; caps 48/256/512/64 per docs/eval_protocol.md).
+# Tier 1: ifeval, defence = fsa
+name: ifeval__fsa
+model: {name: gemma3-12b-it, device: cuda, dtype: bfloat16}
+secret: digits_4
+benchmark: {name: ifeval, split: test}
+defence:
+  name: fsa
+  # TODO: set to a trained adapter (or train: true + train_config)
+  adapter: outputs/training/<run_id>/adapter   # relative to the repository root
+baseline_run: auto   # newest matching run with defence: none (for utility_delta)
+attackers:
+  - {name: direct_request, budget: 4}
+metrics: [utility_delta, leakage, joint_success, over_refusal, latency]
+decoding:
+  scored: {temperature: 0.0, max_new_tokens: 256}          # greedy for scored answers
+  leak: {temperature: 1.0, top_p: 1.0, max_new_tokens: 256, k: 5}  # seeds 2026e6 + secret_index*100 + j
+controls: {no_secret: true}
+budget: 20
+output_dir: outputs

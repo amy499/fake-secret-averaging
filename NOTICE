@@ -1,0 +1,57 @@
+FSA-lite
+Copyright (c) 2026 Amruta Gurav. The code of this repository is licensed under the MIT License
+(LICENSE), except the third-party components listed below, which keep their own licences.
+
+NOT INCLUDED
+------------
+This repository contains no model weights, no LoRA adapters and no benchmark or training datasets.
+Datasets are downloaded at pinned revisions when the code runs (eval/core/data.py,
+scripts/fetch_lite.sh) and are never redistributed here. Adapters you train yourself are derivatives
+of the base model and of the training data: see the model and data licences below before sharing one.
+
+THIRD-PARTY CODE (vendored)
+---------------------------
+Google's IFEval checker (instruction_following_eval), from
+https://github.com/google-research/google-research at commit e6890f85757dd84e27ca6df2dd30651dafad28e0.
+Copyright The Google Research Authors. Licensed under the Apache License, Version 2.0.
+Copied unmodified in two places, each with the licence text next to it:
+  eval/benchmarks/_vendor/instruction_following_eval/   (LICENSE and NOTICE.md in eval/benchmarks/_vendor/)
+  src/fsa_lite/fsa/utility/ifeval_checker/              (LICENSE in that folder)
+The upstream repository has no NOTICE file.
+
+DATASETS (downloaded at runtime; licences as stated by their publishers)
+-----------------------------------------------------------------------
+  CIMemories (facebook/CIMemories, Hugging Face)      CC-BY-NC-4.0 (non-commercial). Used to build
+                                                      FSA-lite training data; adapters trained on it
+                                                      inherit the non-commercial restriction.
+  Tensor Trust (HumanCompatibleAI/tensor-trust-data)  No licence stated. Downloaded at runtime only and
+                                                      never redistributed; used for training data
+                                                      (train split) and for evaluation.
+  PasswordEval (locuslab/password_eval, Hugging Face) Licence not stated on the dataset card.
+                                                      Downloaded at runtime only.
+  ConfAIde (skywalker023/confAIde, GitHub)            MIT. The Tier-4 instruction and question strings
+                                                      in eval/benchmarks/confaide.py are ConfAIde's,
+                                                      verbatim (Copyright (c) 2023 Hyunwoo Kim).
+  MMLU (cais/mmlu, Hugging Face)                      MIT
+  IFEval input data (google-research)                 Apache-2.0
+  GSM8K (openai/gsm8k, Hugging Face)                  MIT
+  ARC-Challenge (allenai/ai2_arc, Hugging Face)       CC-BY-SA-4.0
+  NLTK punkt_tab (nltk/nltk_data)                     Apache-2.0
+
+MODELS (not included; loaded from the Hugging Face hub)
+-------------------------------------------------------
+  Qwen2.5-7B-Instruct (Qwen/Qwen2.5-7B-Instruct)      Apache License 2.0.
+  Gemma-3-12B-it (google/gemma-3-12b-it)              Gemma Terms of Use
+                                                      (https://ai.google.dev/gemma/terms). A LoRA adapter
+                                                      trained on Gemma is a "Model Derivative": anyone
+                                                      distributing one must pass on the use restrictions
+                                                      (including the Prohibited Use Policy), give
+                                                      recipients a copy of the terms, mark modified files,
+                                                      and include a notice: "Gemma is provided under and
+                                                      subject to the Gemma Terms of Use found at
+                                                      ai.google.dev/gemma/terms".
+
+DEFINITIONS
+-----------
+The evaluation definitions (items, prompts, scoring rules, data pins) follow the AI6130 Group 11
+team protocol (Kaur et al., 2026); see docs/eval_protocol.md.

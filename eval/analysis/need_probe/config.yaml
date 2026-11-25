@@ -1,0 +1,52 @@
+# analysis/need_probe on Gemma 3 12B: is "does this request NEED the secret?" linearly readable
+# from the residual stream at the last prompt token (before any reply)?
+#   python -m analysis.need_probe.build --out outputs/need_probe/items.jsonl        # login node, CPU
+#   python -m analysis.need_probe.run --config analysis/need_probe/config.yaml --run-dir outputs/need_probe_gemma3_12b
+# Other models: config_gemma3_4b.yaml, config_qwen25_7b.yaml (via `base:`).
+name: need_probe_gemma3_12b
+model: {name: gemma3-12b-it, device: cuda, dtype: bfloat16}   # default (SDPA) attention: no weights needed
+items: outputs/need_probe/items.jsonl                         # written by analysis.need_probe.build
+output_dir: outputs
+
+conditions: [present, masked]     # present = code in the context; masked = code replaced by "____"
+positions: [user_end, final]      # last token of the user's text; last token of the templated prompt
+
+build:                            # analysis.need_probe.build (shared by every model)
+  seed: 2026
+  n_scenarios: {train: 200, test: 200}   # drawn from PasswordEval's 250 / 250 harness split
+  leak_prone_fraction: 0.2
+  max_attack_chars: 2000                 # skip Tensor Trust attacks longer than this
+  hard_cases: {file: analysis/need_probe/hard_cases.yaml, per_template: 4}   # 24 templates x 4 = 96 items
+
+forward:
+  batch_size: 16
+  max_batch_tokens: 12000         # padded tokens per batch (batches are length-sorted)
+
+probe:
+  Cs: [0.001, 0.01, 0.1, 1.0]     # L2 strength grid (sklearn C = 1 / lambda)
+  cv_folds: 3                     # GroupKFold over train scenarios
+  n_boot: 1000                    # scenario-level bootstrap for the 95% CIs
+  clip_quantile: 0.005            # "clip" variant: winsorise each dim at train quantiles [q, 1-q]
+  drop_top_k: 5                   # "drop" variant: drop the k dims with the largest train |x| per layer
+  massive_dims_csv: null          # optional internals max_abs.csv: its peak dims are dropped too
+  n_jobs: null                    # null = $SLURM_CPUS_PER_TASK or the CPU count
+  seed: 2026
+
+keep_cache: false                 # delete per-batch caches (cache/) once probing is done
+
+# A40 cost model for the printed estimate.
+cost:
+  load_s: 300
+  tokens_per_s: 2500              # teacher-forced prompt tokens per second (12B, bf16)
+  chars_per_token: 3.6
+  template_tokens: 25
+  sec_per_fit: 1.5                # one logistic fit on ~835 x hidden, one core (measured ~0.1 s: errs high)
+  job_limit_h: 6
+  mem_gb: 30
+
+# --dry-run: tiny random Gemma-3 on CPU, harness fixtures, small counts.
+dry_run:
+  model: {name: tiny-gemma3, device: cpu, dtype: float32, attn_implementation: eager}
+  build: {n_scenarios: {train: 6, test: 6}, hard_cases: {per_template: 1}}
+  forward: {batch_size: 8, max_batch_tokens: 8000}
+  probe: {Cs: [0.1, 1.0], cv_folds: 2, n_boot: 100, n_jobs: 1}

@@ -1,0 +1,66 @@
+#!/bin/bash
+#PBS -N lite_train
+#PBS -l select=1:ncpus=16:ngpus=1:mem=110gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#
+# lite_train.pbs (the PBS cluster, short-queue): FSA-lite training of Qwen2.5-7B, resumable, sized for the
+# 01:00:00 short-queue limit. RUN_DIR (required; relative to the repository root) names the run.
+# Needs the data lite_pilot.pbs built; the contamination check is re-run first (FAIL stops the job).
+# MAX_MINUTES (default 50) after it starts, the trainer stops cleanly between reply batches or
+# training steps, leaving a resumable state (cached replies, or a checkpoint), prints how many
+# replies / steps remain and exits 3: resubmit the SAME line. When the last step is done it writes
+# <run>/adapter (PEFT files + training_info.json; with a config `selection` block, run3, the checkpoint
+# the pre-registered dev rule chose, see <run>/selection.json) and this job copies that folder to
+# $ADAPTER_OUT (the harness spec's pbs-site path) and prints the sha256 of adapter_model.safetensors
+# (to fill in the harness spec). Pass RUN_DIR, CONFIG_LITE and ADAPTER_OUT explicitly (no commas in -v values):
+#   qsub -v RUN_DIR=outputs/training/fsa_lite_qwen7b_run3,CONFIG_LITE=configs/training/experiments/fsa_lite_qwen7b_run3.yaml,ADAPTER_OUT=$SCRATCH/harness_adapters/qwen_fsa_lite_run3,MAX_MINUTES=45 -o $SCRATCH/fsa_main_logs/lite_train_run3_1.log $REPO_ROOT/scripts/pbs/lite_train.pbs
+set -uo pipefail
+source "${REPO_ROOT:-${PBS_O_WORKDIR:-$PWD}}/scripts/lib/common_lite_pbs.sh"
+RUN_DIR="${RUN_DIR:?set RUN_DIR (the same value for every job of the run), e.g. -v RUN_DIR=outputs/training/fsa_lite_qwen7b_run1}"
+lite_pbs_require_job
+lite_pbs_banner
+lite_pbs_env || exit 1
+lite_pbs_require_venv || exit 1
+lite_pbs_require_inputs || exit 1
+[ -f "$BUILT/manifest.json" ] || { echo "no built data at $BUILT: run lite_pilot.pbs with this CONFIG_LITE first"; exit 1; }
+"$PY" "$V2/contam_check.py" --data "$BUILT" --harness-data "$HARNESS_DATA" \
+    || { echo "contamination check FAILED: nothing trained"; exit 1; }
+lite_pbs_heldout_check || { echo "held-out check FAILED: nothing trained"; exit 1; }
+"$PY" "$V2/v2_train.py" --config "$CONFIG_LITE" --mode train --device cuda --run-dir "$RUN_DIR" \
+    --max-minutes "${MAX_MINUTES:-50}"
+rc=$?
+if [ $rc = 3 ]; then
+    echo "NOT FINISHED (see the line above for what remains): resubmit the same line:"
+    echo "  qsub -v RUN_DIR=$RUN_DIR,CONFIG_LITE=$CONFIG_LITE,ADAPTER_OUT=$ADAPTER_OUT,MAX_MINUTES=${MAX_MINUTES:-50} -o $SCR/fsa_main_logs/$(basename "$RUN_DIR")_$(date +%m%d_%H%M).log $V2/lite_train.pbs"
+    exit 3
+fi
+[ $rc = 0 ] || exit $rc
+
+case "$RUN_DIR" in /*) RUN="$RUN_DIR" ;; *) RUN="$FSA_DIR/$RUN_DIR" ;; esac
+SRC="$RUN/adapter"
+for f in adapter_model.safetensors adapter_config.json training_info.json; do
+    [ -f "$SRC/$f" ] || { echo "STOP: $SRC/$f missing"; exit 1; }
+done
+sha="$(sha256sum "$SRC/adapter_model.safetensors" | cut -d' ' -f1)"
+if [ -f "$RUN/selection.json" ]; then
+    echo "selection: $(tr -d '\n' < "$RUN/selection.json" | sed -n 's/.*"selected_step": \([0-9]*\).*"rule_met": \([a-z]*\).*/selected_step \1 rule_met \2/p')"
+fi
+if [ -e "$ADAPTER_OUT" ]; then
+    old="$(sha256sum "$ADAPTER_OUT/adapter_model.safetensors" 2>/dev/null | cut -d' ' -f1)"
+    if [ "$old" != "$sha" ]; then
+        echo "STOP: $ADAPTER_OUT already holds another adapter (sha256 ${old:-none}); move it away yourself, then resubmit"
+        exit 1
+    fi
+    echo "adapter already at $ADAPTER_OUT (same sha256)"
+else
+    mkdir -p "$(dirname "$ADAPTER_OUT")"
+    tmp="$ADAPTER_OUT.tmp.${PBS_JOBID%%.*}"
+    rm -rf "$tmp"
+    cp -r "$SRC" "$tmp"
+    [ "$(sha256sum "$tmp/adapter_model.safetensors" | cut -d' ' -f1)" = "$sha" ] || { echo "STOP: copy differs"; exit 1; }
+    mv "$tmp" "$ADAPTER_OUT"
+fi
+echo "ADAPTER: $ADAPTER_OUT"
+echo "adapter_model.safetensors sha256: $sha"
+echo "-> the harness spec (fsa_lite.approach.yaml for run2, fsa_lite_run3.approach.yaml for run3) models.qwen.defence.adapter_sha256: \"$sha\""

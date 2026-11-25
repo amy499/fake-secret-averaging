@@ -1,0 +1,42 @@
+# POST-HOC ABLATION (decided after the run3 PasswordEval results; not a pre-registered approach):
+# FSA-lite run3 WITHOUT the USE term, Gemma only. Same training as fsa_lite_run3 (data built_run3 with
+# its hashes, mix, steps, seeds, need-KL x2, the same pre-registered dev selection rule) except
+# use.weight 0 (configs/training/experiments/fsa_lite_gemma12b_run3_nouse.yaml; the run reuses
+# run3's cached base replies, content-checked by reuse_replies.py). Question: does the USE term cause
+# run3's higher Gemma PasswordEval info leak? Report it as an ablation next to run3, never as a
+# technique row of its own. Same bridge (experiments/_bridges/fsa.py), its own approach name, so its
+# runs go to outputs/protocol/fsa_lite_run3_nouse/... and never touch fsa's, fsa_lite's or run3's.
+#   python run.py --approach fsa_lite_run3_nouse --model gemma --suite core --variant technique --benchmarks password_eval_team
+#   adapter check first: sbatch --export=ALL,CHECK_ARGS="--approach fsa_lite_run3_nouse" scripts/slurm/harness_adapter_check.sbatch
+name: fsa_lite_run3_nouse
+owner: amruta
+post_hoc: true
+# The original variant is approach fsa's (identical model options, checked by core/protocol.py), so
+# stats.team_table pairs these technique runs with the EXISTING fsa original runs, as for run3.
+original_from: fsa
+defence:
+  name: fsa
+  merge: false
+models:
+  gemma:
+    # Must stay identical to fsa.approach.yaml models.gemma.model (checked).
+    model: {batch_size: 16, revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80}
+    defence:
+      # <run>/adapter of RUN_DIR outputs/training/fsa_lite_gemma12b_run3_nouse: the checkpoint the
+      # pre-registered dev rule chose (selection.json). The PBS cluster path only if it is ever copied there.
+      adapter: {local: gemma_fsa_lite_run3_nouse}   # paths.local.yaml adapters.<key>
+      # sha256 of adapter_model.safetensors of the SELECTED adapter ("SELECTION:" line of the train log,
+      # selection.json adapter_sha256): FILL_ME until training is done. The technique variant refuses
+      # to run while it is a placeholder.
+      adapter_sha256: FILL_ME
+  qwen:
+    # Must stay identical to fsa.approach.yaml models.qwen.model (original_from checks every model).
+    model: {batch_size: 16}
+    defence:
+      todo: "Gemma-only post-hoc ablation: no Qwen adapter"
+synthetic:
+  # The same training data and dev split as run3, so the same used-secrets file (never committed).
+  used_secrets: private/fsa_lite_run3_used_secrets.txt
+secret_in_context:
+  # The same held-out file as fsa, so secret-in-context runs pair with fsa's originals too.
+  secrets: private/held_out_secrets.txt

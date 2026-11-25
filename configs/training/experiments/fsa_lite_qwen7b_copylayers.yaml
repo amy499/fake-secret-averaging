@@ -1,0 +1,61 @@
+# COPY-LAYER VARIANT, NOT RUN YET: LoRA on Qwen2.5-7B layers 12-15 only.
+# FSA-lite on Qwen2.5-7B-Instruct: the fsa_lite_gemma12b.yaml recipe with only the model changed, so
+# both adapters follow one recipe (docs/fsa_lite_pipeline.md, "FSA-lite"). Read by
+# src/fsa_lite/lite/v2_train.py with data.source: lite (lite_source.py); the same data as Gemma, rebuilt on
+# The PBS cluster from the same pinned sources and seed (compare units_sha256 in the two manifest.json files).
+# CIMemories labels are HEURISTIC (cimem_data.TASK_DOMAINS), not CIMemories gold labels.
+# bf16 on the PBS cluster (A100-SXM4-40GB), where its harness technique eval also runs, so the pair is on one GPU
+# type: lite_setup.pbs, lite_pilot.pbs, lite_train.pbs (docs/fsa_lite_pipeline.md, "FSA-lite on the PBS cluster").
+name: fsa_lite_qwen7b_copylayers
+seed: 0
+model_key: qwen
+model:
+  hf_id: Qwen/Qwen2.5-7B-Instruct
+  revision: a09a35458c702b33eeacc393d103063234e8bc28   # the PBS cluster cache snapshot = revision_loaded of the harness Qwen originals
+  dtype: bfloat16
+data:
+  source: lite
+  dir: $SCRATCH/fsa_lite_data/built   # the PBS cluster (lite_pilot.pbs builds it)
+  max_seq_tokens: 1024             # prompt + generation.max_new_tokens; longer units are dropped (counted)
+lora:
+  layers: [12, 13, 14, 15]
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+fsa:
+  k: 4                             # fakes per FSA example, drawn fresh at every draw (every step)
+need:
+  weight: 1.0                      # lambda: need-KL(adapted || frozen, same context) on authorised and benign units
+mix:
+  weights:                         # share of micro-batches per turn type (drawn per micro-batch, seeded)
+    tt_attack: 0.40
+    tt_authorised: 0.15
+    cimem_unauthorised: 0.15
+    cimem_authorised: 0.10
+    benign: 0.20
+generation:                        # frozen-model replies, sampled once and cached
+  replies_per_unit: 1
+  max_new_tokens: 128
+  temperature: 1.0
+  batch_size: 16
+train:
+  steps: 400
+  lr: 1.0e-4
+  warmup_steps: 10
+  weight_decay: 0.0
+  grad_accum: 4                    # micro-batches of one example each
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  fake_batch: 4                    # the K = 4 fake contexts in one frozen forward
+  checkpoint_every: 50
+  log_every: 10
+dev:                               # dev splits only (10% of TT defences, 2 CIMemories profiles)
+  every: 50
+  n_per_type: 16                   # tt_attack, tt_authorised, cimem_unauthorised, cimem_authorised
+  max_new_tokens: 128
+  temperature: 1.0
+  batch_size: 16
+pilot:
+  steps: 30
+  n_reply_keys: 80                 # 16 per turn type: times the reply phase

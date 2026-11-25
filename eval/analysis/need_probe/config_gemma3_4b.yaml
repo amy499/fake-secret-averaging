@@ -1,0 +1,6 @@
+# analysis/need_probe on Gemma 3 4B: config.yaml with another model (same items file).
+#   python -m analysis.need_probe.run --config analysis/need_probe/config_gemma3_4b.yaml --run-dir outputs/need_probe_gemma3_4b
+base: analysis/need_probe/config.yaml
+name: need_probe_gemma3_4b
+model: {name: gemma3-4b-it, device: cuda, dtype: bfloat16}
+cost: {load_s: 120, tokens_per_s: 7000}

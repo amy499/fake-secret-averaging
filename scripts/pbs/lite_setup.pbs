@@ -1,0 +1,108 @@
+#!/bin/bash
+#PBS -N lite_setup
+#PBS -l select=1:ncpus=16:ngpus=1:mem=110gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#
+# lite_setup.pbs (the PBS cluster): build the FSA repo's venv for FSA-lite training, inside a job.
+# The pinned training stack (pyproject.toml dependency group ml): `uv sync --frozen --group ml` from
+# uv.lock, which this job creates with `uv lock` on first use (no lock file is shipped)
+# (torch 2.11.0 from the PyTorch cu128 index on Linux, transformers 5.20.1, peft 0.21.2, ...), with
+# /bin/python3.11. uv is installed under $UV_DIR (scratch) by its official installer if missing;
+# uv / pip / torch caches go to $CACHE (scratch). Then: driver check, a bf16 matmul on the GPU, the
+# CPU self-test (src/fsa_lite/lite/selftest_v2.py), PIP_FREEZE.txt and SETUP_OK in .venv/.
+#   qsub -o $SCRATCH/fsa_main_logs/lite_setup.log $REPO_ROOT/scripts/pbs/lite_setup.pbs
+# The cu128 build needs a driver that supports CUDA 12.8. If this node's driver does not, the job
+# stops and says so; resubmit with -v TORCH_CUDA=cu126 to install the SAME torch version from the
+# cu126 index instead (recorded in .venv/TORCH_BUILD.txt; a deviation from the Slurm cluster to report).
+set -euo pipefail
+source "${REPO_ROOT:-${PBS_O_WORKDIR:-$PWD}}/scripts/lib/common_lite_pbs.sh"
+lite_pbs_require_job
+lite_pbs_banner
+lite_pbs_env
+TORCH_CUDA="${TORCH_CUDA:-cu128}"
+
+if [ ! -x "$UV" ]; then
+    mkdir -p "$UV_DIR"
+    url="https://astral.sh/uv/install.sh"
+    [ -n "${UV_VERSION:-}" ] && url="https://astral.sh/uv/${UV_VERSION}/install.sh"
+    echo "installing uv from $url into $UV_DIR"
+    curl -LsSf "$url" | env UV_INSTALL_DIR="$UV_DIR" UV_NO_MODIFY_PATH=1 INSTALLER_NO_MODIFY_PATH=1 sh
+fi
+echo "uv: $("$UV" --version)"
+[ -e .venv ] && [ ! -x .venv/bin/python ] && { echo "STOP: .venv exists without bin/python; remove it yourself"; exit 1; }
+
+# Mirror mode (opt-in: -v HEAVY_FROM_PYTORCH=1 and / or WHEELHOUSE=<dir>; src/fsa_lite/lite/lite_mirror.py).
+# The same uv.lock package set, groups and sha256s; only WHERE files are fetched from changes: a copy of
+# the project whose uv.lock points matching files (same name, same sha256) at the URL the PyTorch index
+# links (NVIDIA wheels: pypi.nvidia.com) and / or at a local wheelhouse (file://) is synced first, then
+# the normal sync installs the project and finds every package already there.
+mirror_heartbeat() {  # one line a minute: a stalled download shows as a flat MiB count
+    local start="$CACHE/.mirror_start.${PBS_JOBID%%.*}"
+    touch "$start"
+    while sleep 60; do
+        n=$(find "$UV_CACHE_DIR" -newer "$start" -type f 2>/dev/null | wc -l)
+        mib=$(find "$UV_CACHE_DIR" -newer "$start" -type f -printf '%s\n' 2>/dev/null | awk '{s += $1} END {printf "%.0f", s / 1048576}')
+        echo "mirror heartbeat $(date +%H:%M:%S): $n new files, $mib MiB written to the uv cache since the start"
+    done
+}
+mirror_sync() {
+    [ "$TORCH_CUDA" = cu128 ] || { echo "STOP: mirror mode installs uv.lock's torch 2.11.0+cu128 only (TORCH_CUDA=$TORCH_CUDA)"; return 1; }
+    export UV_CONCURRENT_DOWNLOADS="${UV_CONCURRENT_DOWNLOADS:-4}"
+    exec 9>"$CACHE/lite_setup.lock"
+    flock -n 9 || { echo "STOP: another lite_setup job holds $CACHE/lite_setup.lock"; return 1; }
+    # partial downloads of earlier, killed jobs (no uv runs now: the lock above); finished cache entries stay
+    n=$(find "$UV_CACHE_DIR" -maxdepth 2 -name '.tmp*' 2>/dev/null | wc -l)
+    find "$UV_CACHE_DIR" -maxdepth 2 -name '.tmp*' -prune -exec rm -rf {} + 2>/dev/null || true
+    echo "mirror: removed $n stale .tmp* entries from $UV_CACHE_DIR; the partial .venv is reused (uv completes it)"
+    M="$CACHE/mirror_project"
+    rm -rf "$M" && mkdir -p "$M"
+    cp pyproject.toml .python-version "$M"/
+    [ -f README.md ] && cp README.md "$M"/
+    args=()
+    [ "${HEAVY_FROM_PYTORCH:-0}" = 1 ] || args+=(--no-pytorch)
+    [ -n "${WHEELHOUSE:-}" ] && args+=(--wheelhouse "$WHEELHOUSE")
+    [ "${MIRROR_STRICT:-0}" = 1 ] && args+=(--strict)
+    /bin/python3.11 -I "$V2/lite_mirror.py" rewrite --lock uv.lock --out "$M/uv.lock" --plan "$M/plan.json" "${args[@]}" || return 1
+    mirror_heartbeat &
+    HB=$!
+    trap 'kill $HB 2>/dev/null || true' EXIT
+    echo "mirror: uv sync of the rewritten copy (uv checks every file against the uv.lock sha256)"
+    (cd "$M" && UV_PROJECT_ENVIRONMENT="$FSA_DIR/.venv" "$UV" sync --frozen --group ml --python /bin/python3.11 --no-install-project) || return 1
+    echo "mirror: normal uv sync (installs the project; the packages are already installed)"
+    "$UV" sync --frozen --group ml --python /bin/python3.11 || return 1
+    kill "$HB" 2>/dev/null || true
+    "$UV" export --frozen --group ml --no-hashes --no-emit-project --format requirements-txt -o "$M/expected.txt" >/dev/null
+    "$PY" "$V2/lite_mirror.py" verify --expected "$M/expected.txt" --plan "$M/plan.json" --out .venv/MIRROR.txt || return 1
+}
+if [ ! -f uv.lock ]; then  # no lock file is shipped: resolve it once from pyproject.toml (pinned ml group)
+    "$UV" lock --python /bin/python3.11 || { echo "STOP: uv lock failed"; exit 1; }
+fi
+if [ "${HEAVY_FROM_PYTORCH:-0}" = 1 ] || [ -n "${WHEELHOUSE:-}" ]; then
+    mirror_sync || { echo "STOP: mirror-mode setup failed"; exit 1; }
+else
+    "$UV" sync --frozen --group ml --python /bin/python3.11
+fi
+
+drv="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9][0-9]*\.[0-9]*\).*/\1/p' | head -1)"
+echo "driver supports CUDA ${drv:-unknown}; torch build requested: $TORCH_CUDA"
+need="${TORCH_CUDA#cu}"; need="${need:0:2}.${need:2}"
+if [ -n "$drv" ] && awk -v d="$drv" -v n="$need" 'BEGIN { exit !(d + 0 < n + 0) }'; then
+    echo "STOP: the driver supports CUDA $drv, the $TORCH_CUDA build needs $need. Resubmit with -v TORCH_CUDA=cu126 (same torch version, other CUDA build)."
+    exit 1
+fi
+if [ "$TORCH_CUDA" != cu128 ]; then
+    tv="$("$PY" -c 'import torch; print(torch.__version__.split("+")[0])')"
+    "$UV" pip install --python "$PY" --reinstall-package torch "torch==$tv" --index-url "https://download.pytorch.org/whl/$TORCH_CUDA"
+fi
+"$PY" - <<'EOF' | tee .venv/TORCH_BUILD.txt
+import peft, torch, transformers
+print("torch", torch.__version__, "cuda", torch.version.cuda, "| transformers", transformers.__version__, "| peft", peft.__version__)
+assert torch.cuda.is_available(), "no CUDA GPU visible to torch"
+x = torch.ones(64, 64, device="cuda", dtype=torch.bfloat16)
+print("bf16 matmul on", torch.cuda.get_device_name(0), "->", float((x @ x).sum()))
+EOF
+"$UV" pip freeze --python "$PY" > .venv/PIP_FREEZE.txt
+"$PY" "$V2/selftest_v2.py"
+date -Is > .venv/SETUP_OK
+echo "SETUP OK: $PY"

@@ -1,0 +1,36 @@
+#!/bin/bash
+#PBS -N preflight_fakes
+#PBS -l select=1:ncpus=16:ngpus=1:mem=110gb
+#PBS -l walltime=00:30:00
+#PBS -j oe
+#
+# preflight_fakes.pbs (the PBS cluster): as preflight_fakes.sbatch, for the Qwen run3 config:
+#  1. contamination and held-out checks of the built data (stops on FAIL);
+#  2. (optional, OLD_DATA + OLD_REPLIES + NEW_RUN) reuse_replies.py: carry over the old run's replies whose
+#     prompt is byte-identical in the new data (refuses to overwrite NEW_RUN/replies.jsonl);
+#  3. preflight_fakes.py (tokenizer offline from the PBS cluster model cache, pinned revision; no model loaded).
+#   qsub -v OLD_DATA=$SCRATCH/fsa_lite_data/built_run3_old_heldout,OLD_REPLIES=outputs/training/fsa_lite_qwen7b_run3_discarded_heldout_overlap/replies.jsonl,NEW_RUN=outputs/training/fsa_lite_qwen7b_run3 -o $SCRATCH/fsa_main_logs/preflight_qwen_r3.log $REPO_ROOT/scripts/pbs/preflight_fakes.pbs
+set -uo pipefail
+source "${REPO_ROOT:-${PBS_O_WORKDIR:-$PWD}}/scripts/lib/common_lite_pbs.sh"
+CONFIG_LITE="${CONFIG_LITE:-configs/training/experiments/fsa_lite_qwen7b_run3.yaml}"
+N="${N:-200}"
+lite_pbs_require_job
+lite_pbs_banner
+lite_pbs_env || exit 1
+lite_pbs_require_venv || exit 1
+lite_cfg_data || exit 1
+[ -f "$BUILT/manifest.json" ] || { echo "no built data at $BUILT: run rebuild_run3.pbs first"; exit 1; }
+"$PY" "$V2/contam_check.py" --data "$BUILT" --harness-data "$HARNESS_DATA" || { echo "contamination check FAILED"; exit 1; }
+lite_pbs_heldout_check || { echo "held-out check FAILED"; exit 1; }
+echo "data sha256: $(cd "$BUILT" && sha256sum units.jsonl pools.json used_secrets.txt | cut -c1-16 | tr '\n' ' ')"
+if [ -n "${OLD_DATA:-}" ] && [ -n "${OLD_REPLIES:-}" ] && [ -n "${NEW_RUN:-}" ]; then
+    [ -f "$OLD_DATA/units.jsonl" ] && [ -f "$OLD_REPLIES" ] || { echo "OLD_DATA/units.jsonl or OLD_REPLIES missing"; exit 1; }
+    mkdir -p "$NEW_RUN"
+    "$PY" "$V2/reuse_replies.py" --config "$CONFIG_LITE" --old-data "$OLD_DATA" --new-data "$BUILT" \
+        --replies "$OLD_REPLIES" --out "$NEW_RUN/replies.jsonl" || exit 1
+fi
+NAME="$(basename "$CONFIG_LITE" .yaml)"
+RUN_ARG=()
+if [ -n "${PREFLIGHT_RUN_DIR:-}" ]; then RUN_ARG=(--run-dir "$PREFLIGHT_RUN_DIR"); echo "draw pool from $PREFLIGHT_RUN_DIR/replies.jsonl"; fi
+"$PY" "$V2/preflight_fakes.py" --config "$CONFIG_LITE" --n "$N" ${RUN_ARG[@]+"${RUN_ARG[@]}"} \
+    --out "outputs/diagnostics/preflight_fakes/$NAME.json"

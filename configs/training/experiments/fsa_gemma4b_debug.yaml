@@ -1,0 +1,43 @@
+# FSA debug run on Gemma-3 4B: ~200 steps to check the whole loop on the Slurm cluster before 12B.
+#   sbatch --export=ALL,CONFIG=configs/training/experiments/fsa_gemma4b_debug.yaml scripts/slurm/fsa_train.sbatch
+name: fsa_gemma4b_debug
+seed: 0
+method: fsa
+model:
+  id: gemma3-4b-it
+target: mixture
+reply_source: offline
+fsa:
+  k: 8
+lora:
+  layers: all
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+secrets:
+  split_seed: 0          # = baseline_leakage.py --seed 0
+  n_train: 50            # = baseline_leakage.py --preset full (50 train + 50 held-out)
+  n_heldout: 50
+prompts:
+  train_system_methods: [base]
+  train_user_prompts: [rand_20_2digit, rand_10_2digit]
+  heldout_user_prompts: [lottery]   # training on it fails at startup
+generation:
+  max_new_tokens: 128
+  temperature: 1.0
+  offline_replies_per_prompt: 4
+train:
+  steps: 200
+  lr: 1.0e-4
+  warmup_steps: 10
+  batch_size: 1
+  grad_accum: 4          # effective batch 4 examples
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  dtype: auto            # bfloat16 on cuda
+  checkpoint_every: 50
+utility:
+  weight: 0.0            # lambda for KL(adapted || frozen) on general prompts; 0 = off
+monitor:
+  every: 10

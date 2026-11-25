@@ -1,0 +1,45 @@
+# FSA-lite (Amruta): the FSA objective trained on Tensor Trust + CIMemories + benign prompts, K = 4
+# fresh fakes, need-KL lambda = 1 (src/fsa_lite/lite/, configs/training/experiments/fsa_lite_*.yaml,
+# trained by src/fsa_lite/lite/v2_train.py). Same bridge as FSA v1 (experiments/_bridges/fsa.py), its
+# own approach name, so its runs go to outputs/protocol/fsa_lite/... and never touch fsa's.
+#   python run.py --approach fsa_lite --model gemma --suite core --variant technique
+#   adapter check first: sbatch --export=ALL,CHECK_ARGS="--approach fsa_lite" scripts/slurm/harness_adapter_check.sbatch
+name: fsa_lite
+owner: amruta
+# The original variant is approach fsa's: identical model options for every model key (checked by
+# core/protocol.py before any run, recorded in summary.json as original_from), so stats.team_table
+# pairs fsa_lite technique runs with the EXISTING fsa original runs (same cluster, same settings
+# fingerprint, same revision_loaded) instead of re-running the original model.
+original_from: fsa
+defence:
+  name: fsa
+  merge: false            # true = merge_and_unload() after the checks (faster; protocol runs only)
+models:
+  gemma:
+    # Must stay identical to fsa.approach.yaml models.gemma.model (checked).
+    model: {batch_size: 16, revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80}
+    defence:
+      # v2 trainer output: <run>/adapter/ (adapter_model.safetensors, adapter_config.json,
+      # training_info.json), saved by save_adapter() in src/fsa_lite/lite/v2_train.py
+      # (1b75a3c) at run / "adapter", where run = --run-dir RUN_DIR relative to
+      # experiments/fake_secret_average (lite_train.sbatch cds there). Trained under transformers 5.x:
+      # the bridge remaps the keys for 4.51.3 and checks every tensor against the file.
+      adapter: {local: gemma_fsa_lite}   # paths.local.yaml adapters.<key>
+      # sha256 of the ORIGINAL adapter_model.safetensors of fsa_lite_gemma12b_run2 (48 layers, q/k/v/o; the final
+      # Gemma FSA-lite adapter, chosen over run1 on the dev set only: dev Tensor Trust attack leak 0.0 on 112 units),
+      # measured on the Slurm cluster. One pin per model: an the PBS cluster copy must be the same file byte for byte.
+      adapter_sha256: "7828b15337419950cd3dbe92f308b5b662d3ea410c3cdad0d681561f3207db75"
+  qwen:
+    # Must stay identical to fsa.approach.yaml models.qwen.model (no revision pin: see there).
+    model: {batch_size: 16}
+    defence:
+      adapter: {local: qwen_fsa_lite_run2}   # paths.local.yaml adapters.<key>
+      adapter_sha256: 850df8a92bc50cfc7fb1127d49eaac617daba8f83713ae86e471f3f60a06dc3d
+synthetic:
+  # Secrets FSA-lite used in training or model selection (Tensor Trust access codes and CIMemories
+  # values of its built data, one per line). Not created yet: synthetic and secret-in-context runs of
+  # fsa_lite refuse until it exists; the core and second suites do not use it.
+  used_secrets: private/fsa_lite_used_secrets.txt
+secret_in_context:
+  # The same held-out file as fsa, so secret-in-context runs pair with fsa's originals too.
+  secrets: private/held_out_secrets.txt

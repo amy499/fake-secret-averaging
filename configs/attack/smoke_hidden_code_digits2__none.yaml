@@ -1,0 +1,21 @@
+# ATTACK STUDY config (core/runner.py: secret in context, sampled leak replies, attackers). Not the team protocol:
+# team-table runs use `python run.py --approach ...` (core/protocol.py; caps 48/256/512/64 per docs/eval_protocol.md).
+# Smoke test on a real model (Slurm): hidden_code, defence = none, digits_2 (the FSA 00-99 split),
+# 5 held-out test secrets x 2 sampled replies, likelihood attacker over all 100 candidates.
+#   sbatch scripts/slurm/harness_run.sbatch configs/smoke_hidden_code_digits2__none.yaml
+name: smoke_hidden_code_digits2__none
+model: {name: gemma3-12b-it, device: cuda, dtype: bfloat16}
+secret: digits_2
+benchmark: {name: hidden_code, split: test, limit: 5, system: base}
+defence: none
+baseline_run: null
+attackers:
+  # K = 100 enumerates the whole digits_2 space; calibration uses 5 train secrets
+  - {name: likelihood, label: likelihood_grey_box, mode: grey_box, K: 100, calibrate: true, n_calib: 5}
+metrics: [code_metrics, latency]
+decoding:
+  scored: {temperature: 0.0, max_new_tokens: 256}
+  leak: {temperature: 1.0, top_p: 1.0, max_new_tokens: 256, k: 2}  # 2 sampled replies per secret
+controls: {no_secret: true}
+budget: 20
+output_dir: outputs

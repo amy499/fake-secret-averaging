@@ -1,0 +1,9 @@
+# analysis/need_probe on Qwen2.5-7B-Instruct (pre-norm family): config.yaml with another model.
+#   python -m analysis.need_probe.run --config analysis/need_probe/config_qwen25_7b.yaml --run-dir outputs/need_probe_qwen25_7b
+base: analysis/need_probe/config.yaml
+name: need_probe_qwen25_7b
+model: {name: qwen2.5-7b-instruct, device: cuda, dtype: bfloat16}
+cost: {load_s: 200, tokens_per_s: 4000}
+
+dry_run:
+  model: {name: tiny-qwen2, device: cpu, dtype: float32, attn_implementation: eager}

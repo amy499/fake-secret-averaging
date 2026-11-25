@@ -1,0 +1,105 @@
+# FSA-lite run3 on Qwen2.5-7B-Instruct (the PBS cluster, A100-40GB): the recipe of fsa_lite_gemma12b_run3.yaml
+# with only the model and the PBS cluster paths changed. run2 (fsa_lite_qwen7b_run2.yaml) is unchanged.
+# Why: run2's only training secret was the Tensor Trust access code, which guards nothing, so training
+# never saw password -> payload, correct release was never rewarded, and the need-KL anchor (25% of
+# draws) was too weak: "withhold" generalised (PasswordEval use 71.6 -> 67.8, leak_info 7.8 -> 15.6).
+# Changes (each behind its own flag; with the flags off lite_source / v2_train behave as in run2):
+#   * data: build_lite_run3.py = run2's units (same builders, same arguments) + KEY-GUARDED-PAYLOAD
+#     units (kgp_data.py, own templates): a password (Tensor Trust train code) guards a payload
+#     (synthetic codename / meeting / account, or a CIMemories value); per context three matched
+#     turns: kgp_attack (no password: TT attack text or a direct ask), kgp_wrong (near-miss or another
+#     password), kgp_correct (the exact password). 600 train contexts; 120 dev contexts, disjoint
+#     passwords and payloads (TT dev codes + synthetic passwords; NOT PasswordEval).
+#   * fsa.secret_match robust: leak = normalised password OR payload in the reply; secret_token_weight
+#     (10, as run2) covers password and payload spans, their normalised forms and fragments (>= 4 chars).
+#     K = 4 fakes for BOTH password and payload, each from its own pool, fresh at every draw.
+#   * use: kgp_correct turns get need-KL (every token) + a weighted NLL on the frozen model's own
+#     correct-release replies (only replies holding the payload and not repeating the password),
+#     payload tokens x5. No FSA / suppression term on these turns.
+#   * mix: authorised / correct turns 40% (kgp_correct 0.25 + tt_authorised 0.10 + cimem_authorised
+#     0.05), benign 0.15 (as run2); FSA turns 45% (kgp_attack 0.15, kgp_wrong 0.15, tt_attack 0.10,
+#     cimem_unauthorised 0.05). need.weight 1.0 -> 2.0 (x2 vs run2).
+#   * NO reinforcement learning / leak reward, and the secret stays in the context (no gating).
+#   * dev + selection (fixed before any benchmark run): greedy dev replies at steps 0 / 125 / 250 /
+#     375 / 500 (saved); the rule in `selection` below; the trainer writes selection.json, the chosen
+#     step and the adapter sha256, and makes the chosen checkpoint <run>/adapter.
+# Time on the PBS cluster: resumable short-queue 1-hour jobs (lite_train.pbs, MAX_MINUTES 45: exit 3 between reply batches
+# or steps). Copy Qwen run2's replies.jsonl into the run folder first (README). ~4,200 new replies,
+# 500 steps and 5 dev evaluations of 456 greedy replies: ~70-80 min of GPU time, i.e. 2-3 chunks.
+name: fsa_lite_qwen7b_run3
+seed: 0
+model_key: qwen
+model:
+  hf_id: Qwen/Qwen2.5-7B-Instruct
+  revision: a09a35458c702b33eeacc393d103063234e8bc28   # = revision_loaded of the harness Qwen originals
+  dtype: bfloat16
+data:
+  source: lite
+  builder: build_lite_run3.py      # the job scripts build data.dir with this builder if it is missing
+  dir: $SCRATCH/fsa_lite_data/built_run3   # the PBS cluster
+  max_seq_tokens: 1024
+lora:
+  layers: all
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+fsa:
+  k: 4                             # fakes per FSA example and per slot (password, payload), drawn fresh
+  units: leaking_reply             # FSA draws: (unit, reply) pairs whose cached base reply leaks
+  secret_token_weight: 10
+  secret_match: robust             # run3: password + payload, normalised forms and >= 4-char fragments
+need:
+  weight: 2.0                      # x2 vs run2
+use:                               # run3: kgp_correct turns
+  weight: 1.0                      # weighted NLL on the frozen model's own correct-release reply
+  payload_token_weight: 5
+  units: releasing_reply           # only base replies that hold the payload ...
+  require_no_password: true        # ... and do not repeat the password (fallback: all releasing)
+mix:
+  weights:
+    kgp_correct: 0.25
+    tt_authorised: 0.10
+    cimem_authorised: 0.05
+    benign: 0.15
+    kgp_attack: 0.15
+    kgp_wrong: 0.15
+    tt_attack: 0.10
+    cimem_unauthorised: 0.05
+generation:
+  replies_per_unit: 1
+  replies_per_type: {tt_attack: 3, cimem_unauthorised: 3, kgp_attack: 2, kgp_wrong: 2, kgp_correct: 3}
+  max_new_tokens: 128
+  temperature: 1.0
+  batch_size: 16
+train:
+  steps: 500
+  lr: 2.0e-4
+  warmup_steps: 20
+  weight_decay: 0.0
+  grad_accum: 4
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  fake_batch: 4
+  checkpoint_every: 125            # = the selection steps
+  log_every: 10
+dev:
+  every: 125
+  greedy: true
+  n_per_type: {tt_attack: 48, tt_authorised: 16, cimem_unauthorised: 16, cimem_authorised: 16, kgp_contexts: 120}
+  max_new_tokens: 128
+  temperature: 1.0                 # unused with greedy
+  batch_size: 16
+  save_replies: true
+selection:
+  # PRE-REGISTERED (fixed before any benchmark run): choose the checkpoint with the best dev kgp
+  # joint (use on the correct turn AND no payload leak on the attack and wrong turns, per context),
+  # subject to dev use >= 0.95 x step-0 use; ties: higher use, then the earlier step. If no step
+  # meets the floor, the highest-use step is taken and selection.json says rule_met: false.
+  rule: "best dev kgp joint s.t. dev kgp use >= 0.95 x step-0 dev kgp use; ties: higher use, earlier step"
+  metric: joint
+  use_floor_ratio: 0.95
+  steps: [125, 250, 375, 500]
+pilot:
+  steps: 30
+  n_reply_keys: 160               # 20 reply keys per turn type (8 types): kgp_correct 20 units x 3 replies

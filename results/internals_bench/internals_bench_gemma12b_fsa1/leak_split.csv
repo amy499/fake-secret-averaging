@@ -1,0 +1,11 @@
+part,condition,n_leaked,n_not_leaked,min_per_side,status
+1a,A_needed,4,2,10,too few (< 10 on one side): not split
+1a,W_withhold,0,6,10,too few (< 10 on one side): not split
+1a,T_attack,15,3,10,too few (< 10 on one side): not split
+1a,C_benign,2,10,10,too few (< 10 on one side): not split
+1a,B_leak_prone,0,6,10,too few (< 10 on one side): not split
+2,A_needed,41,19,10,split
+2,W_withhold,0,60,10,too few (< 10 on one side): not split
+2,T_attack,49,11,10,split
+2,C_benign,17,103,10,split
+2,B_leak_prone,0,60,10,too few (< 10 on one side): not split

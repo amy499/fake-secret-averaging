@@ -1,0 +1,45 @@
+# FSA (fake-secret-average, Amruta) on the team protocol. The approach folder
+# experiments/fake_secret_average/ arrives by merging branch `amruta`; this spec lives next to its
+# bridge (experiments/_bridges/fsa.py) until then.
+#   python run.py --approach fsa --model gemma --suite core --variant technique
+#   adapter check on the Slurm cluster first: sbatch scripts/slurm/harness_adapter_check.sbatch
+name: fsa
+owner: amruta
+defence:
+  name: fsa
+  merge: false            # true = merge_and_unload() after the checks (faster; protocol runs only)
+models:
+  gemma:
+    # revision: the pinned Gemma snapshot (the one the team protocol's reference runs loaded);
+    # shared by both variants, so the original and the technique load the same weights.
+    model: {batch_size: 16, revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80}
+    defence:
+      # FSA lambda = 0, pe4 fullmix, trained under transformers 5.x (the bridge remaps the keys
+      # for 4.51.3 and checks that all 384 LoRA tensors attach). One copy per cluster, chosen by
+      # core.cluster (HARNESS_CLUSTER, set by the job scripts); FSA_ADAPTER_DIR overrides both.
+      adapter: {local: gemma_fsa0}   # paths.local.yaml adapters.<key>
+      # sha256 of the ORIGINAL adapter_model.safetensors of 20261113-165343_fsa_gemma12b_pe4_fullmix
+      # (lambda = 0), measured on the Slurm cluster. The PBS cluster copy is the same file byte for byte, so this one pin
+      # covers both clusters and FSA_ADAPTER_DIR; the bridge checks it before loading (and before
+      # any key remap) and refuses a mismatch.
+      adapter_sha256: "46c8b770ec7d4fe7e0f71ba3bb6656001bd819a1f4beb8296ee972a5c1fc5a27"
+  qwen:
+    # No revision pin on purpose: the Qwen original core runs on the PBS cluster (442d6fc) ran without one, and
+    # adding it here would change their settings_sha256. Each run records the commit it loaded
+    # (summary.json model.revision_loaded); stats.team_table refuses a pair whose revision_loaded differs.
+    model: {batch_size: 16}
+    defence:
+      # FSA v1 (lambda = 0, pe4 fullmix recipe: configs/training/experiments/fsa_qwen7b_pe4_fullmix.yaml).
+      # FILL_ME placeholders: the technique variant refuses to run until both the path for the
+      # cluster and the sha256 are filled in; the original variant is unaffected. Qwen keys need no
+      # remap (model.layers.N under transformers 4.51.3 and 5.x).
+      adapter: {local: qwen_fsa0}   # paths.local.yaml adapters.<key>
+      adapter_sha256: FILL_ME
+synthetic:
+  # experiments/_bridges/private/ is git-ignored (experiments/*/private/).
+  # used_secrets.txt: all 100 FSA digits4 codes (the digits4 list, scripts/gen_eval_secrets.py,
+  # seed 4004), counting the 50 held-out ones too, because they were used to choose lambda.
+  used_secrets: private/used_secrets.txt
+secret_in_context:
+  # 300 distinct 4-digit codes, none of the 100 above, drawn with numpy default_rng(20261116).
+  secrets: private/held_out_secrets.txt

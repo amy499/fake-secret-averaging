@@ -1,0 +1,67 @@
+# FSA-lite on Gemma-3-12B-it: Tensor Trust + CIMemories + own benign prompts (docs/fsa_lite_pipeline.md,
+# "FSA-lite"). Read by src/fsa_lite/lite/v2_train.py with data.source: lite (lite_source.py).
+# Data: src/fsa_lite/lite/build_lite.py output in data.dir; v2_train refuses to start unless its
+# contamination report says PASS for exactly those files. CIMemories labels are HEURISTIC
+# (cimem_data.TASK_DOMAINS), not CIMemories gold labels; recorded in training_info.json.
+# Evaluated later in the harness (PasswordEval, ConfAIde Tier 4, MMLU, IFEval); nothing of those
+# four, nor of the harness Tensor Trust files, is in the training data.
+#
+# Steps: 400, about 1.4 h on one A40 (estimate) = model load (~5 min) + reply phase (1,933 replies at
+# batch 16, ~20 min) + dev metrics (9 evaluations of 64 replies, ~6 min) + 400 steps at ~7.9 s/step
+# (~53 min). Step time: v1's measured 0.107 s per forward-equivalent at ~200 tokens, scaled to the
+# built data's ~650-token sequences (mean prompt 546 tokens, Qwen2.5 tokenizer, + reply), x 5.65
+# forward-equivalents per micro-batch (FSA: 4 fakes + forward + backward = 7; need: 4; 55% FSA) x 4.
+# lite_pilot.sbatch prints steps_for_1h15 from measured times: set train.steps to it if it differs much.
+name: fsa_lite_gemma12b
+seed: 0
+model_key: gemma
+model:
+  hf_id: google/gemma-3-12b-it
+  revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80   # checked against the HF cache refs/main at start
+  dtype: bfloat16
+data:
+  source: lite
+  dir: ~/fsa_lite_data/built       # build_lite.py --out
+  max_seq_tokens: 1024             # prompt + generation.max_new_tokens; longer units are dropped (counted)
+lora:
+  layers: all
+  target_modules: [q_proj, k_proj, v_proj, o_proj]
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+fsa:
+  k: 4                             # fakes per FSA example, drawn fresh at every draw (every step)
+need:
+  weight: 1.0                      # lambda: need-KL(adapted || frozen, same context) on authorised and benign units
+mix:
+  weights:                         # share of micro-batches per turn type (drawn per micro-batch, seeded)
+    tt_attack: 0.40
+    tt_authorised: 0.15
+    cimem_unauthorised: 0.15
+    cimem_authorised: 0.10
+    benign: 0.20
+generation:                        # frozen-model replies, sampled once and cached
+  replies_per_unit: 1
+  max_new_tokens: 128
+  temperature: 1.0
+  batch_size: 16
+train:
+  steps: 400
+  lr: 1.0e-4
+  warmup_steps: 10
+  weight_decay: 0.0
+  grad_accum: 4                    # micro-batches of one example each
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  fake_batch: 4                    # the K = 4 fake contexts in one frozen forward
+  checkpoint_every: 50
+  log_every: 10
+dev:                               # dev splits only (10% of TT defences, 2 CIMemories profiles)
+  every: 50
+  n_per_type: 16                   # tt_attack, tt_authorised, cimem_unauthorised, cimem_authorised
+  max_new_tokens: 128
+  temperature: 1.0
+  batch_size: 16
+pilot:
+  steps: 30
+  n_reply_keys: 80                 # 16 per turn type: times the reply phase
