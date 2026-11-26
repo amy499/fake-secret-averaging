@@ -76,7 +76,7 @@ def _scenario_items(row: dict) -> list[Item]:
     return [
         Item(id=f"{sid}::{v}", system_prompt=system, user_prompt=u, secret=p,
              needs_secret=needs, expected_use=use,
-             metadata={"scenario": sid, "variant": v, "confidential_info": c})  # fmt: skip
+             metadata={"scenario": sid, "variant": v, "confidential_info": c}, protected=(c,))  # fmt: skip
         for v, u, needs, use in variants
     ]
 
@@ -220,7 +220,8 @@ class PasswordEvalTeam(TeamBenchmark):
                                   secret=d["password"], needs_secret=cond == "right",
                                   expected_use="reveal" if cond == "right" else "withhold",
                                   metadata={"i": i, "cond": cond, "info": d["confidential_info"],
-                                            "pw": d["password"], "scenario": d.get("id")}))  # fmt: skip
+                                            "pw": d["password"], "scenario": d.get("id")},
+                                  protected=(d["confidential_info"],)))  # fmt: skip  (read by defences only)
         return items
 
     def score(self, item: Item, text: str) -> dict:

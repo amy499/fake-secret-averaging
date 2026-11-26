@@ -7,7 +7,7 @@
 # technique row of its own. Same bridge (experiments/_bridges/fsa.py), its own approach name, so its
 # runs go to outputs/protocol/fsa_lite_run3_nouse/... and never touch fsa's, fsa_lite's or run3's.
 #   python run.py --approach fsa_lite_run3_nouse --model gemma --suite core --variant technique --benchmarks password_eval_team
-#   adapter check first: sbatch --export=ALL,CHECK_ARGS="--approach fsa_lite_run3_nouse" scripts/slurm/harness_adapter_check.sbatch
+#   adapter check first, then the run: the job commands are in docs/cluster_setup.md (item 1).
 name: fsa_lite_run3_nouse
 owner: amruta
 post_hoc: true
@@ -22,13 +22,12 @@ models:
     # Must stay identical to fsa.approach.yaml models.gemma.model (checked).
     model: {batch_size: 16, revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80}
     defence:
-      # <run>/adapter of RUN_DIR outputs/training/fsa_lite_gemma12b_run3_nouse: the checkpoint the
-      # pre-registered dev rule chose (selection.json). The PBS cluster path only if it is ever copied there.
+      # <run>/adapter of the training run fsa_lite_gemma12b_run3_nouse (outside the repository; its path
+      # goes in paths.local.yaml): the checkpoint the pre-registered dev rule chose (selection.json).
       adapter: {local: gemma_fsa_lite_run3_nouse}   # paths.local.yaml adapters.<key>
-      # sha256 of adapter_model.safetensors of the SELECTED adapter ("SELECTION:" line of the train log,
-      # selection.json adapter_sha256): FILL_ME until training is done. The technique variant refuses
-      # to run while it is a placeholder.
-      adapter_sha256: FILL_ME
+      # sha256 of adapter_model.safetensors of the SELECTED adapter (selection.json adapter_sha256,
+      # "SELECTION:" line of the train log): step 500, rule_met true. The bridge refuses any other file.
+      adapter_sha256: 63a6d34663c64b26d1b36b49c0221523300a457fe4f85a2b98152f14742ddbc3
   qwen:
     # Must stay identical to fsa.approach.yaml models.qwen.model (original_from checks every model).
     model: {batch_size: 16}

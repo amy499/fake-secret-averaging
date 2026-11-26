@@ -134,7 +134,8 @@ def test_existing_run_is_not_overwritten(tmp_path):
 
 
 def test_approach_specs_in_repo_load():
-    for name in ("fsa", "fsa_lite", "fsa_lite_run3", "fsa_lite_run3_nouse"):  # configs/eval/*.approach.yaml
+    for name in ("fsa", "fsa_lite", "fsa_lite_run3", "fsa_lite_run3_nouse",
+                 "output_filter_naive", "output_filter_rule"):  # configs/eval/*.approach.yaml
         spec = P.load_approach(name)
         assert spec["name"] == name and "name" in spec["defence"]
     with pytest.raises(P.ProtocolError, match="no approach spec"):

@@ -1,0 +1,31 @@
+# UPPER BOUND, NOT A DEFENCE CLAIM. Output filter with PasswordEval's own access rule
+# (baselines/output_filter.py, mode rule). No adapter, no training: the plain model generates, then
+# the password is redacted from every reply (as output_filter_naive) and the protected info is also
+# redacted unless a user turn of the prompt contains the correct password (the same case-insensitive,
+# separator-tolerant matching). The filter is GIVEN the ground-truth info string and the access rule
+# (an oracle no deployed filter has), so its rows bound what any string filter could reach; they are
+# labelled as such in summary.json (defence_info.upper_bound / label) and in team_table.md.
+# Run on PasswordEval (both models); the other core benchmarks are not run (team table: MISSING).
+#   python run.py --approach output_filter_rule --model gemma --suite core --variant technique --benchmarks password_eval_team
+# The original variant is approach fsa's (identical model options, checked by core/protocol.py), so
+# stats.team_table pairs these runs with the EXISTING fsa original runs on the same cluster.
+name: output_filter_rule
+owner: amruta
+original_from: fsa
+defence:
+  name: output_filter
+  mode: rule
+  replacement: "[REDACTED]"
+  min_spaced: 4
+  max_sep: 3
+  label: "oracle output filter: given the true protected info and PasswordEval's password rule"
+models:
+  gemma:
+    # Must stay identical to fsa.approach.yaml models.gemma.model (checked).
+    model: {batch_size: 16, revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80}
+  qwen:
+    # Must stay identical to fsa.approach.yaml models.qwen.model (checked).
+    model: {batch_size: 16}
+secret_in_context:
+  # The same held-out file as fsa (required by original_from).
+  secrets: private/held_out_secrets.txt

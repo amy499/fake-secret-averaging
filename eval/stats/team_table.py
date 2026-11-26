@@ -319,8 +319,22 @@ def build(root: Path, approaches: list[str] | None = None, models: list[str] | N
         for k in ("original_from", "facts_original", "facts_technique"):
             r.setdefault(k, None)
         r.setdefault("scorer_limits", [])
+    shown = {r["approach"] for r in rows + report_only}
     return {"rows": rows, "report_only": report_only, "robust_leak": robust_rows,
+            "approach_labels": {a: v for a, v in approach_labels(runs).items() if a in shown},
             "filters": {"approaches": approaches, "models": models, "suite": suite}}  # fmt: skip
+
+
+def approach_labels(runs: list[dict]) -> dict[str, dict]:
+    """Labels a technique run declares in summary.json defence_info (`label`, `upper_bound`, e.g. the
+    oracle output_filter_rule): shown next to the table, so such a row is never read as a defence."""
+    out: dict[str, dict] = {}
+    for r in runs:
+        s = r["summary"]
+        info = s.get("defence_info") or {}
+        if s.get("variant") == "technique" and isinstance(info, dict) and (info.get("label") or info.get("upper_bound")):
+            out.setdefault(s["approach"], {"label": info.get("label"), "upper_bound": bool(info.get("upper_bound"))})
+    return out
 
 
 # --------------------------------------------------------------------------- output
@@ -399,6 +413,11 @@ def write(result: dict[str, Any], out: Path) -> None:
         w.writerow(HEADER)
         w.writerows(_table_rows(result["rows"]))
     md = _md(result["rows"], "Results table: public benchmarks (original vs technique)")
+    labels = result.get("approach_labels") or {}
+    if labels:
+        md += "\n## Approach labels\n\n" + "".join(
+            f"- **{a}**: " + ("UPPER BOUND, not a defence claim. " if v["upper_bound"] else "") + (v["label"] or "") + "\n"
+            for a, v in sorted(labels.items()))  # fmt: skip
     limits: dict[str, list[str]] = {}
     for r in result["rows"]:
         for lim in r.get("scorer_limits") or []:

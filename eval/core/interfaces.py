@@ -71,13 +71,18 @@ class SecretContext:
     positions depend on the tokenizer and chat template: HF models map spans to tokens
     (models/hf.py `secret_token_mask`). Passed to ModelWrapper.generate as `secret_ctx`, one per
     prompt (None when the prompt holds no secret, e.g. the plain MMLU/IFEval/GSM8K items and the
-    no-secret controls)."""
+    no-secret controls).
+
+    `protected` holds the item's other protected strings, when the benchmark has them (Item.protected,
+    e.g. PasswordEval's confidential info, which the password guards). Empty for every other
+    benchmark; only defences that ask for it read it (baselines/output_filter.py, mode `rule`)."""
 
     secret: str
     spans: tuple[SecretSpan, ...]
+    protected: tuple[str, ...] = ()
 
     @staticmethod
-    def find(messages: Sequence[Message], secret: str | None) -> SecretContext | None:
+    def find(messages: Sequence[Message], secret: str | None, protected: Sequence[str] = ()) -> SecretContext | None:
         """Every non-overlapping occurrence of `secret` in each message's content; None when
         there is no secret."""
         if not secret:
@@ -88,12 +93,14 @@ class SecretContext:
             while (k := text.find(secret, pos)) >= 0:
                 spans.append(SecretSpan(j, k, k + len(secret)))
                 pos = k + len(secret)
-        return SecretContext(secret, tuple(spans))
+        return SecretContext(secret, tuple(spans), tuple(p for p in protected if p))
 
 
-def secret_contexts(prompts: Sequence[Sequence[Message]], secrets: Sequence[str | None]) -> list[SecretContext | None]:
+def secret_contexts(prompts: Sequence[Sequence[Message]], secrets: Sequence[str | None],
+                    protected: Sequence[Sequence[str]] | None = None) -> list[SecretContext | None]:  # fmt: skip
     """One SecretContext per prompt (None where the secret is None)."""
-    return [SecretContext.find(p, s) for p, s in zip(prompts, secrets)]
+    prot = protected if protected is not None else [()] * len(secrets)
+    return [SecretContext.find(p, s, q) for p, s, q in zip(prompts, secrets, prot)]
 
 
 @dataclass
@@ -103,7 +110,9 @@ class Item:
     `secret` is the protected string that sits in the context. `allowed_fact` is context the
     model may disclose (e.g. a public key ID). `needs_secret` says whether the task can only be
     solved by *using* the secret (e.g. checking a code). `expected_use` is the reference answer
-    or behaviour for scoring (benchmark-specific)."""
+    or behaviour for scoring (benchmark-specific). `protected` lists other strings the item
+    protects besides the secret (PasswordEval: the confidential info the password guards); it is
+    passed to defences in SecretContext.protected and changes neither the prompt nor the scoring."""
 
     id: str
     system_prompt: str
@@ -114,6 +123,7 @@ class Item:
     needs_secret: bool = False
     expected_use: Any = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    protected: tuple[str, ...] = ()
 
     def messages(self) -> list[Message]:
         msgs: list[Message] = []
@@ -127,7 +137,7 @@ class Item:
 
     def secret_context(self) -> SecretContext | None:
         """The secret and its spans in messages() (what generate() receives as secret_ctx)."""
-        return SecretContext.find(self.messages(), self.secret)
+        return SecretContext.find(self.messages(), self.secret, self.protected)
 
     def with_secret(self, candidate: str | None, placeholder: str = "[hidden]") -> Item:
         """Copy of the item with every occurrence of the secret replaced by `candidate`

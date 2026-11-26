@@ -1,8 +1,9 @@
 """FSA-lite run3 without the USE term (POST-HOC ABLATION, Gemma only;
 configs/eval/fsa_lite_run3_nouse.approach.yaml): its own output folder, its original variant
 identical to approach fsa's (so stats.team_table pairs it with the existing fsa original runs), run3's
-used-secrets file, the adapter path of its own run, the FILL_ME sha256 recorded in a dry run (a real
-technique run refuses it), no Qwen adapter (a Qwen technique run refuses), and run3's spec unchanged."""
+used-secrets file, the adapter path of its own run, the pinned sha256 of the selected adapter (step 500,
+rule_met true; no placeholder left), no Qwen adapter (a Qwen technique run refuses), and run3's spec
+unchanged."""
 
 from __future__ import annotations
 
@@ -23,7 +24,8 @@ def test_nouse_spec_paths_and_files():
     nu, r3, fsa = P.load_approach(NAME), P.load_approach("fsa_lite_run3"), P.load_approach("fsa")
     assert nu["name"] == NAME and nu["original_from"] == "fsa" and nu["defence"] == r3["defence"] and nu["post_hoc"] is True
     g = nu["models"]["gemma"]["defence"]
-    assert g["adapter"] == {"local": "gemma_fsa_lite_run3_nouse"} and g["adapter_sha256"] == "FILL_ME"
+    assert g["adapter"] == {"local": "gemma_fsa_lite_run3_nouse"}
+    assert g["adapter_sha256"] == "63a6d34663c64b26d1b36b49c0221523300a457fe4f85a2b98152f14742ddbc3"  # selected step 500
     assert nu["models"]["gemma"]["model"] == r3["models"]["gemma"]["model"]
     assert nu["models"]["qwen"]["defence"]["todo"].startswith("Gemma-only post-hoc ablation")
     # run3's data and dev split: the same used-secrets file; the shared held-out file
@@ -45,7 +47,7 @@ def test_nouse_original_is_fsa_original_and_outputs_are_separate(tmp_path):
     assert _settings(fo) == _settings(nt) == FSA_GEMMA_ORIGINAL_DRY_SETTINGS_442D6FC
     s = json.loads((nt[0] / "summary.json").read_text(encoding="utf-8"))
     assert s["approach"] == NAME and s["original_from"]["approach"] == "fsa"
-    assert s["defence_info"]["placeholders"] == ["adapter_sha256"]  # FILL_ME until the ablation is trained
+    assert s["defence_info"]["placeholders"] == []  # the ablation adapter is pinned: no placeholder left
 
 
 def test_nouse_qwen_technique_refuses(tmp_path):

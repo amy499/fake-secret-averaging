@@ -351,7 +351,8 @@ def run_benchmark(s: Session, bench_name: str, out_root: Path, dry_run: bool = F
         for start in range(0, len(order), batch):
             chunk = order[start : start + batch]
             gens = model.generate([msgs[i] for i in chunk], gen_cfg, [None] * len(chunk),
-                                  secret_ctx=[SecretContext.find(msgs[i], items[i].secret) for i in chunk])
+                                  secret_ctx=[SecretContext.find(msgs[i], items[i].secret, items[i].protected)
+                                              for i in chunk])  # fmt: skip
             for i, g in zip(chunk, gens):
                 results[i] = g
     pos = {i: k for k, i in enumerate(order)}

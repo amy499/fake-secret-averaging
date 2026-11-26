@@ -36,7 +36,7 @@ models:
       adapter: {local: qwen_fsa0}   # paths.local.yaml adapters.<key>
       adapter_sha256: FILL_ME
 synthetic:
-  # experiments/_bridges/private/ is git-ignored (experiments/*/private/).
+  # configs/eval/private/ is git-ignored (**/private/ in .gitignore).
   # used_secrets.txt: all 100 FSA digits4 codes (the digits4 list, scripts/gen_eval_secrets.py,
   # seed 4004), counting the 50 held-out ones too, because they were used to choose lambda.
   used_secrets: private/used_secrets.txt

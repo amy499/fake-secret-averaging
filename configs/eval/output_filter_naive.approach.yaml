@@ -1,0 +1,29 @@
+# Baseline: output filter, NAIVE (baselines/output_filter.py, mode naive). No adapter, no training:
+# the plain model generates, then every occurrence of the item's secret (PasswordEval: the password)
+# is redacted from the reply (exact, case-insensitive and separator-tolerant matches). The protected
+# info is never touched, so on PasswordEval it can only lower leak_pw; leak_info, use and joint show
+# what a password-only string filter leaves.
+# Run on PasswordEval (both models); the other core benchmarks are not run (team table: MISSING).
+#   python run.py --approach output_filter_naive --model gemma --suite core --variant technique --benchmarks password_eval_team
+# The original variant is approach fsa's (identical model options, checked by core/protocol.py), so
+# stats.team_table pairs these runs with the EXISTING fsa original runs on the same cluster, the
+# same pairing as fsa_lite_run3.
+name: output_filter_naive
+owner: amruta
+original_from: fsa
+defence:
+  name: output_filter
+  mode: naive
+  replacement: "[REDACTED]"
+  min_spaced: 4
+  max_sep: 3
+models:
+  gemma:
+    # Must stay identical to fsa.approach.yaml models.gemma.model (checked).
+    model: {batch_size: 16, revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80}
+  qwen:
+    # Must stay identical to fsa.approach.yaml models.qwen.model (checked).
+    model: {batch_size: 16}
+secret_in_context:
+  # The same held-out file as fsa (required by original_from).
+  secrets: private/held_out_secrets.txt

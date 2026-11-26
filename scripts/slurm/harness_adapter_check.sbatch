@@ -9,7 +9,7 @@
 #   sbatch --export=ALL,CHECK_ARGS="--n 8 --benchmark gsm8k_team_sic" scripts/slurm/harness_adapter_check.sbatch
 #   sbatch --export=ALL,HARNESS_HF_HUB_CACHE=/path/to/cache scripts/slurm/harness_adapter_check.sbatch   # another model cache
 # Needs: the pinned stack in .venv, the MMLU/GSM8K/IFEval data under $HARNESS_DATA,
-# experiments/_bridges/private/{used,held_out}_secrets.txt, and the Gemma licence + an HF token
+# the approach's configs/eval/private/ files (held_out_secrets.txt and its used-secrets file), and the Gemma licence + an HF token
 # (HF_TOKEN in the environment, or ~/.cache/huggingface/token, used via HF_TOKEN_PATH). Without a
 # cached snapshot the job stops (it runs with HF_HUB_OFFLINE=1; the model is about 24 GB).
 # Partition and QoS are fixed (<gpu-partition> / normal): never override them on the sbatch line.

@@ -109,7 +109,8 @@ def generate_replies(ctx: RunContext, items: Sequence[Item]) -> list[Reply]:
     def run(batch: list[tuple[Item, int, bool]], gen_cfg: GenConfig) -> None:
         prompts = [(it.with_secret(None) if ctrl else it).messages() for it, _, ctrl in batch]
         seeds = [None if j < 0 else ctx.seed_for(it, j) for it, j, _ in batch]
-        spans = secret_contexts(prompts, [None if ctrl else it.secret for it, _, ctrl in batch])
+        spans = secret_contexts(prompts, [None if ctrl else it.secret for it, _, ctrl in batch],
+                                [() if ctrl else it.protected for it, _, ctrl in batch])  # fmt: skip
         gens = model.generate(prompts, gen_cfg, seeds, secret_ctx=spans)
         for (it, j, ctrl), s, g in zip(batch, seeds, gens):
             replies.append(Reply(item_id=it.id, sample=j, seed=s, text=g.text, reasoning=g.reasoning,

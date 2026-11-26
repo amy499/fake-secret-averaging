@@ -8,7 +8,7 @@ here, so each is a `defence:` name in an attack-study config (`configs/attack/`)
 |---|---|---|---|
 | `none` | the model unchanged (the "original" variant of every protocol run) | `basic.py` | ✅ |
 | `prompt_instruction` | appends a confidentiality instruction to the system message (adds one if none) | `basic.py` | ✅ |
-| `output_filter` | redacts the prompt's secret from every reply: exact, case-insensitive and separator-tolerant matches ("1 2 3 4"); no encodings | `output_filter.py` | ✅ unit + dry run; 🟡 not run on a real model |
+| `output_filter` | redacts the prompt's secret from every reply: exact, case-insensitive and separator-tolerant matches ("1 2 3 4"); no encodings. Mode `naive` (default): the secret only. Mode `rule`: also the item's protected strings (PasswordEval: the confidential info) unless a user turn contains the secret; it is given the true info and PasswordEval's rule, so it is an **oracle upper bound, not a defence**. Specs: `configs/eval/output_filter_{naive,rule}.approach.yaml` (PasswordEval, both models) | `output_filter.py` | ✅ unit + dry run; 🟡 not run on a real model |
 | B3 (match the no-secret model) | a LoRA trained so that, with the secret in context, the model matches the frozen model *without* the secret in the prompt (target `no_secret`, same loop as FSA v1) | trained by `scripts/train_fsa.py` with `configs/training/experiments/b3_gemma12b.yaml`; evaluated as an adapter through the `fsa` bridge | 🟡 one Gemma-3-12B-it run on the FSA v1 2-digit task (`results/fsa_v1/`) |
 
 `basic.py` also holds `DelegatingWrapper`, the base class for a defence that wraps a model

@@ -112,7 +112,7 @@ All three source `common_lite_pbs.sh`, which holds the paths, puts every cache o
    Resubmit the last line (with a new log name, and without `-W`) while the log ends with `NOT FINISHED`.
 5. **Harness:**
    - Fill `fsa_lite.approach.yaml` `models.qwen.defence.adapter_sha256` with the printed sha256.
-   - Copy `fsa_lite_data/built/used_secrets.txt` to `experiments/_bridges/private/fsa_lite_used_secrets.txt` (git-ignored). It's needed only for fsa_lite's report-only runs.
+   - Copy `fsa_lite_data/built/used_secrets.txt` to `configs/eval/private/fsa_lite_used_secrets.txt` (git-ignored). It's needed only for fsa_lite's report-only runs.
 
 ## FSA-lite run2 (after run1 did not move dev leakage)
 
@@ -288,6 +288,6 @@ The run reuses run3's cached base replies through `reuse_replies.py`, run by `pr
 - `OLD_REPLIES` = the run3 run's `replies.jsonl`;
 - `NEW_RUN` = `outputs/training/fsa_lite_gemma12b_run3_nouse`.
 
-Then train with `lite_train.sbatch` (same `RUN_DIR`, `CONFIG_LITE` passed explicitly). The harness spec is `configs/eval/fsa_lite_run3_nouse.approach.yaml`: sha FILL_ME until the `SELECTION:` line, then PasswordEval only (`--benchmarks password_eval_team`).
+Then train with `lite_train.sbatch` (same `RUN_DIR`, `CONFIG_LITE` passed explicitly). The harness spec is `configs/eval/fsa_lite_run3_nouse.approach.yaml`: the selected adapter (step 500, rule met) is pinned there (sha256 prefix `63a6d346`); it runs PasswordEval only (`--benchmarks password_eval_team`). Job commands: [cluster_setup.md](cluster_setup.md).
 
 Self-tests: `selftest_run3.py` (run by `selftest_v2.py`) covers run3; `selftest_postnorm.py` covers Part B on tiny random Gemma3/Qwen2 models; its `--plot-only` mode runs in the harness .venv.

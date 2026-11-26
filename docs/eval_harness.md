@@ -55,9 +55,14 @@ On a cluster:
 
 ```bash
 bash scripts/submit_slurm.sh scripts/slurm/harness_run.sbatch --approach fsa_lite_run3 --model gemma --suite core --variant technique
-QSUB_EXTRA='-l walltime=03:00:00 -v RUN_ARGS="--approach fsa_lite_run3 --model qwen --suite core --variant technique"' \
-  bash scripts/submit_pbs.sh scripts/pbs/harness_run.pbs
+RUN_ARGS="--approach fsa_lite_run3 --model qwen --suite core --variant technique" \
+  QSUB_EXTRA="-l walltime=03:00:00 -v RUN_ARGS" bash scripts/submit_pbs.sh scripts/pbs/harness_run.pbs
 ```
+
+A value with spaces (`RUN_ARGS`, `CHECK_ARGS`, `EXTRA_ARGS`) goes in the environment and only its name in
+`-v`: QSUB_EXTRA is split on spaces, so `-v RUN_ARGS="a b"` inside it would break apart. Slurm jobs
+read such variables from the environment directly (sbatch exports it). Per-cluster setup and the
+job sequences: [cluster_setup.md](cluster_setup.md).
 
 Check an adapter on its model before a full run:
 `bash scripts/submit_slurm.sh scripts/slurm/harness_adapter_check.sbatch` (`CHECK_ARGS="--approach fsa_lite_run3"`).

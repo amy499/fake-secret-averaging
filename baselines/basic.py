@@ -48,7 +48,7 @@ class DelegatingWrapper(ModelWrapper):
         """The secret contexts for transformed prompts: spans found again in the new messages."""
         if secret_ctx is None:
             return None
-        return [None if c is None else SecretContext.find(p, c.secret) for p, c in zip(prompts, secret_ctx)]
+        return [None if c is None else SecretContext.find(p, c.secret, c.protected) for p, c in zip(prompts, secret_ctx)]
 
     def logprobs(self, prompts: Sequence[list[Message]], continuations: Sequence[str],
                  secret_ctx: Sequence[SecretContext | None] | None = None, **options: Any) -> list[float]:  # fmt: skip
