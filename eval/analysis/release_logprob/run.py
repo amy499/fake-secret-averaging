@@ -182,21 +182,37 @@ def _f(e: dict) -> str:
     return f"{e['mean']:+.3f} [{e['ci_low']:+.3f}, {e['ci_high']:+.3f}]"
 
 
+def _turn(t: str, correct: str) -> str:
+    return f"turn {t} (correct password)" if t == correct else f"turn {t}"
+
+
 def markdown(res: dict[str, Any]) -> str:
-    st = res["stats"]
+    """The report printed at the end of the job and written to release_logprob.md. Every row names
+    its turn (or comparison) and every cell its quantity, so any tail of the log reads on its own;
+    the numbers are those of release_logprob.json (unit `sum`), unchanged."""
+    st, c, n = res["stats"], res["correct_turn"], res["n_scenarios"]
+    units = (f"Units: log p(info | prompt, frame) in nats, summed over the info tokens; mean [95% bootstrap CI over "
+             f"{n} scenarios]; {res['model']}, approach {res['approach']}.")  # fmt: skip
     L = [f"# Release log-prob (H4): {res['model']}, {res['approach']} ({NOTE})", "",
          f"Frame: `{json.dumps(res['frame'])}` ({res['frame_position']}); target {res['target']}; "
-         f"{res['n_scenarios']} scenarios x {len(res['turns'])} turns; correct turn `{res['correct_turn']}`. "
-         "Log-prob in nats, summed over the info tokens; mean [95% bootstrap CI over scenarios].", "",
-         "| turn | base | adapter | delta (adapter - base) | share delta > 0 |", "|---|---|---|---|---|"]  # fmt: skip
+         f"{n} scenarios x {len(res['turns'])} turns; correct-password turn `{c}`.", "", units, "",
+         "## Per turn: log p(info) without (base) and with the adapter", "",
+         "| row = turn | base: log p(info), adapter off | adapter: log p(info), adapter on "
+         "| adapter - base (paired) | share of scenarios with adapter > base |", "|---|---|---|---|---|"]  # fmt: skip
     for t, m in st["by_turn"].items():
         s = m["sum"]
-        L.append(f"| {t} | {_f(s['base'])} | {_f(s['adapter'])} | {_f(s['delta'])} | {s['share_delta_gt_0']:.2f} |")
-    L += ["", f"| gap: {res['correct_turn']} minus | base gap | adapter gap | gap change |", "|---|---|---|---|"]
+        L.append(f"| {_turn(t, c)} | base {_f(s['base'])} | adapter {_f(s['adapter'])} | adapter - base {_f(s['delta'])} "
+                 f"| adapter > base in {s['share_delta_gt_0']:.2f} |")  # fmt: skip
+    L += ["", f"## Gap: log p(info) on the correct-password turn ({c}) minus on another turn", "",
+          f"| row = turns compared | base gap ({c} - turn), adapter off | adapter gap ({c} - turn), adapter on "
+          "| gap change (adapter gap - base gap) |", "|---|---|---|---|"]  # fmt: skip
     for t, m in st["gap_vs_correct"].items():
         s = m["sum"]
-        L.append(f"| {t} | {_f(s['base_gap'])} | {_f(s['adapter_gap'])} | {_f(s['gap_change'])} |")
-    L += ["", "Per-token means are in release_logprob.json (unit `mean`).", ""]
+        L.append(f"| {c} - {t} | base gap {_f(s['base_gap'])} | adapter gap {_f(s['adapter_gap'])} "
+                 f"| gap change {_f(s['gap_change'])} |")  # fmt: skip
+    L += ["", "Reading: a gap that grows (gap change > 0) = release more tied to the correct password; one that "
+          "shrinks = the other turns rose with the correct one.", "Per-token means are in release_logprob.json "
+          "(unit `mean`).", units, ""]  # fmt: skip
     return "\n".join(L)
 
 

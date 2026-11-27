@@ -48,7 +48,8 @@ export HF_HUB_CACHE="${HARNESS_HF_HUB_CACHE:-${HF_HUB_CACHE:?set HF_HUB_CACHE in
 # shellcheck disable=SC1091
 source scripts/lib/job_lib.sh   # head_commit: reads .git, no git binary
 echo "job=$SLURM_JOB_ID cluster=$HARNESS_CLUSTER node=$(hostname) commit=$(head_commit)"
-echo "HF_HUB_CACHE=$HF_HUB_CACHE (gemma-3-12b-it cached: $([ -d "$HF_HUB_CACHE/models--google--gemma-3-12b-it" ] && echo yes || echo no))"
+# shellcheck disable=SC2086  (EXTRA_ARGS is a word list on purpose)
+model_cache_report "$@" ${EXTRA_ARGS:-}   # the model of --model (both if none)
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || true
 
 if [ "${SETUP:-0}" = 1 ]; then

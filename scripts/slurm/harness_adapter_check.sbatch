@@ -44,7 +44,8 @@ export HF_HUB_CACHE="${HARNESS_HF_HUB_CACHE:-${HF_HUB_CACHE:?set HF_HUB_CACHE in
 # shellcheck disable=SC1091
 source scripts/lib/job_lib.sh   # head_commit: reads .git, no git binary
 echo "job=$SLURM_JOB_ID cluster=$HARNESS_CLUSTER node=$(hostname) commit=$(head_commit)"
-echo "HF_HUB_CACHE=$HF_HUB_CACHE (gemma-3-12b-it cached: $([ -d "$HF_HUB_CACHE/models--google--gemma-3-12b-it" ] && echo yes || echo no))"
+# shellcheck disable=SC2086  (CHECK_ARGS is a word list on purpose)
+model_cache_report --model gemma ${CHECK_ARGS:-}   # gemma unless CHECK_ARGS says --model qwen
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || true
 
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-1}"   # load the pinned revision from the cache, never download

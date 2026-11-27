@@ -70,3 +70,36 @@ def test_override_folder_in_a_dry_run(tmp_path):
     assert res["approach"] == "fsa_lite_run3_nouse"
     assert (tmp_path / "gemma" / "fsa_lite_run3_nouse" / "release_logprob.json").exists()
     assert not (tmp_path / "gemma" / "release_logprob.json").exists()
+
+
+def test_printed_table_is_self_describing_and_matches_the_json():
+    """Every data row names its turn / comparison and every cell its quantity (a log tail reads on
+    its own); the numbers are the JSON's, formatted, and markdown() leaves the result unchanged."""
+    import copy
+    import random
+
+    rnd = random.Random(0)
+    turns, correct = ["ask", "wrong", "right"], "right"
+    rows = [{"scenario": s, "turn": t, "base": {"sum": rnd.uniform(-9, -1), "mean": rnd.uniform(-2, 0)},
+             "adapter": {"sum": rnd.uniform(-9, -1), "mean": rnd.uniform(-2, 0)}}
+            for s in range(6) for t in turns]  # fmt: skip
+    res = {"model": "gemma", "approach": "fsa_lite_run3_nouse", "frame": RL.FRAME, "frame_position": "assistant turn",
+           "target": "meta.info", "turns": turns, "correct_turn": correct, "n_scenarios": 6,
+           "stats": RL.summarise(rows, turns, correct)}  # fmt: skip
+    before = copy.deepcopy(res)
+    md = RL.markdown(res)
+    assert res == before  # printing changes nothing
+    data = [ln for ln in md.splitlines() if ln.startswith("| ") and not ln.startswith("| row =")]
+    per_turn, gaps = data[:3], data[3:]
+    assert len(per_turn) == 3 and len(gaps) == 2
+    for t, ln in zip(turns, per_turn):
+        s = res["stats"]["by_turn"][t]["sum"]
+        assert ln.startswith(f"| turn {t}") and ("(correct password)" in ln) is (t == correct)
+        for label, key in (("base", "base"), ("adapter", "adapter"), ("adapter - base", "delta")):
+            assert f"{label} {RL._f(s[key])}" in ln
+    for t, ln in zip(("ask", "wrong"), gaps):
+        s = res["stats"]["gap_vs_correct"][t]["sum"]
+        assert ln.startswith(f"| {correct} - {t} |")
+        for label, key in (("base gap", "base_gap"), ("adapter gap", "adapter_gap"), ("gap change", "gap_change")):
+            assert f"{label} {RL._f(s[key])}" in ln
+    assert md.rstrip().splitlines()[-1].startswith("Units: log p(info")  # the last line of a tail says the unit

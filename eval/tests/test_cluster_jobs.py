@@ -187,6 +187,26 @@ def test_job_scripts_source_the_git_free_helper():
     for s in ("scripts/pbs/harness_run.pbs", "scripts/pbs/harness_adapter_check.pbs", "scripts/slurm/harness_run.sbatch", "scripts/slurm/harness_adapter_check.sbatch"):
         text = (REPO / s).read_text(encoding="utf-8")
         assert "source scripts/lib/job_lib.sh" in text and "commit=$(head_commit)" in text, s
+        # the cached-model line names the job's model, not always Gemma
+        assert "model_cache_report" in text and "gemma-3-12b-it cached: $([" not in text, s
+
+
+@pytest.mark.skipif(BASH is None, reason="no bash")
+def test_model_cache_report_names_the_jobs_model(tmp_path):
+    hub = tmp_path / "hub"
+    (hub / "models--Qwen--Qwen2.5-7B-Instruct").mkdir(parents=True)  # only Qwen cached
+
+    def report(*args: str) -> str:
+        lib = (REPO / "scripts" / "lib" / "job_lib.sh").as_posix()
+        r = subprocess.run([BASH, "-c", f'source "{lib}"; model_cache_report "$@"', "x", *args],
+                           env={**os.environ, "HF_HUB_CACHE": hub.as_posix()}, capture_output=True, text=True, timeout=30)  # fmt: skip
+        return r.stdout.strip()
+
+    assert report("--approach", "a", "--model", "qwen", "--variant", "technique").endswith("(Qwen2.5-7B-Instruct cached: yes)")
+    assert report("--model=gemma").endswith("(gemma-3-12b-it cached: no)")
+    assert report("--model", "gemma", "--n", "4", "--model", "qwen").endswith("(Qwen2.5-7B-Instruct cached: yes)")  # last wins
+    both = report("build", "outputs/protocol")  # no --model: both
+    assert both.endswith("(gemma-3-12b-it cached: no, Qwen2.5-7B-Instruct cached: yes)") and both.startswith("HF_HUB_CACHE=")
 
 
 # --------------------------------------------------------------------------- setup: uv installed on request

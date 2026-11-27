@@ -5,7 +5,7 @@ description = "FSA-lite: a LoRA defence against in-context secret leakage (fake-
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Amruta Gurav" }]
-requires-python = ">=3.10"
+requires-python = ">=3.11"   # the pinned ml group needs 3.11+ (pyarrow==26.0.1); = .python-version
 dependencies = [
     "numpy>=1.26",
     "pyyaml>=6.0",
