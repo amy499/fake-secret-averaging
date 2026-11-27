@@ -684,7 +684,7 @@ def test_from_scores_with_calibrate_scores_only_train(tmp_path, tok, monkeypatch
     calls = []
     monkeypatch.setattr(likelihood, "score_candidates", _overconfident(by_reply, calls))
     monkeypatch.setattr(
-        attack, "_load_scorer", lambda args, saved: (None, tok, saved.scorer, 10**6, None)
+        attack, "_load_scorer", lambda args, saved: (None, tok, saved.scorer, 10**6, None, [])
     )
     assert attack.main([str(run), "--from-scores", str(path), "--calibrate"]) == 0
     second = run / "likelihood_attack_2.json"

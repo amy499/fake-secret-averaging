@@ -41,6 +41,14 @@ DTYPES = ("auto", "float32", "bfloat16", "float16")
 # and baseline runs record it in config.yaml (generation.*) for the likelihood attacker's check.
 PADDING_SIDE = "left"  # tokenizer setting; the prompt itself is never padded (see below)
 PROMPT_PADDING = "none (one prompt per generate call, num_return_sequences)"
+# Adapter copies with keys renamed to the live model's layout (only when the prefixes differ).
+REMAP_ROOT = Path(__file__).resolve().parents[4] / "outputs" / "adapters_remapped"
+
+
+def load_record(gen: Any, spec: ModelSpec) -> dict[str, Any] | None:
+    """What `gen` loaded for `spec` (revision, dtype, adapter check), or None (mock / not loaded)."""
+    adapter = spec.adapter if spec.method not in PLAIN_METHODS else None
+    return (getattr(gen, "loaded_info", None) or {}).get((spec.hf_id, adapter, spec.revision))
 
 
 def resolve_dtype(dtype: str, device: str) -> str:
@@ -83,7 +91,9 @@ class HFGenerator:
         self.batch_size = batch_size
         self._token = token
         self._cache_dir = cache_dir
-        self._loaded: dict[tuple[str, str | None], tuple[Any, Any]] = {}
+        self._loaded: dict[tuple[str, str | None, str | None], tuple[Any, Any]] = {}
+        # What each load actually got (revision, dtype, the adapter check record), same keys.
+        self.loaded_info: dict[tuple[str, str | None, str | None], dict[str, Any]] = {}
         self._lock = threading.Lock()  # one generation at a time (CPU-bound anyway)
 
     @property
@@ -139,27 +149,54 @@ class HFGenerator:
         return AutoTokenizer.from_pretrained(hf_id, token=self._token, cache_dir=self._cache_dir)
 
     def _load(self, spec: ModelSpec) -> tuple[Any, Any]:
-        key = (spec.hf_id, spec.adapter if spec.method not in PLAIN_METHODS else None)
+        adapter = spec.adapter if spec.method not in PLAIN_METHODS else None
+        key = (spec.hf_id, adapter, spec.revision)
         if key in self._loaded:
             return self._loaded[key]
         torch, transformers = _import_ml()
+        from fsa.training import peft_check
+
+        if adapter:  # the pin is checked on the original file BEFORE the base model loads
+            peft_check.check_pin(Path(adapter), spec.adapter_sha256)
+        kw: dict[str, Any] = {"token": self._token, "cache_dir": self._cache_dir}
+        if spec.revision:
+            kw["revision"] = spec.revision
         try:
-            tok = transformers.AutoTokenizer.from_pretrained(
-                spec.hf_id, token=self._token, cache_dir=self._cache_dir
-            )
+            tok = transformers.AutoTokenizer.from_pretrained(spec.hf_id, **kw)
             model = transformers.AutoModelForCausalLM.from_pretrained(
                 spec.hf_id,
                 dtype=getattr(torch, self.dtype),
                 device_map=self.device,  # load shards straight onto the device
-                token=self._token,
-                cache_dir=self._cache_dir,
+                **kw,
             )
         except OSError as e:  # missing/gated repo, no network, no HF access
             raise GeneratorUnavailable(f"could not load {spec.hf_id}: {e}") from None
-        if key[1]:
-            from peft import PeftModel
-
-            model = PeftModel.from_pretrained(model, key[1])
+        try:
+            dtype_loaded = str(next(model.parameters()).dtype).replace("torch.", "")
+        except (AttributeError, StopIteration, TypeError):  # stand-in models in tests
+            dtype_loaded = None
+        info: dict[str, Any] = {
+            "revision_requested": spec.revision,
+            "revision_loaded": getattr(getattr(model, "config", None), "_commit_hash", None),
+            "dtype_loaded": dtype_loaded,
+            "model_class": type(model).__name__,
+        }
+        if spec.revision and info["revision_loaded"] not in (None, spec.revision):
+            raise GeneratorUnavailable(
+                f"{spec.hf_id}: loaded revision {info['revision_loaded']}, pinned {spec.revision}"
+            )
+        if adapter:
+            # The harness bridge's checks (fsa.training.peft_check): layout, shapes, target_modules,
+            # tensor counts, training_info.json, key remap if the prefix differs, and after loading:
+            # every LoRA tensor attached and equal to the file. Any mismatch raises AdapterError.
+            model, info["adapter_check"] = peft_check.load_verified(
+                model,
+                Path(adapter),
+                hf_id=spec.hf_id,
+                remap_root=REMAP_ROOT,
+                want_sha=spec.adapter_sha256,
+            )
+        self.loaded_info[key] = info
         model.eval()  # already on self.device via device_map
         tok.padding_side = PADDING_SIDE
         if tok.pad_token_id is None:

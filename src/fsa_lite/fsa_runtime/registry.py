@@ -32,12 +32,14 @@ class BaseModelEntry(BaseModel):
     label: str
     hf_id: str
     n_layers: int | None = Field(default=None, ge=1)
+    # Hub commit to load (from_pretrained revision=); None = whatever the cache's refs/main names.
+    revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
     optional: bool = False
     enabled: bool = True
     adapters: dict[Method, str] = Field(default_factory=dict)  # method -> LoRA adapter path
 
     def info(self) -> BaseModelInfo:
-        return BaseModelInfo(**self.model_dump(exclude={"adapters"}))
+        return BaseModelInfo(**self.model_dump(exclude={"adapters", "revision"}))
 
     def adapter_for(self, method: str) -> str | None:
         path = self.adapters.get(method)
@@ -82,7 +84,12 @@ class Registry:
         if not m.enabled:
             raise RegistryError(f"method {method!r} is disabled")
         return ModelSpec(
-            method=m.id, base_model=bm.id, hf_id=bm.hf_id, k=m.k, adapter=bm.adapter_for(m.id)
+            method=m.id,
+            base_model=bm.id,
+            hf_id=bm.hf_id,
+            k=m.k,
+            adapter=bm.adapter_for(m.id),
+            revision=bm.revision,
         )
 
 

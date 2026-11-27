@@ -1,0 +1,46 @@
+#!/bin/bash
+#PBS -N fsa_likelihood
+#PBS -l select=1:ncpus=16:ngpus=1:mem=110gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#
+# fsa_likelihood.pbs (the PBS cluster): scripts/slurm/fsa_likelihood.sbatch for PBS. The likelihood
+# (Bayes) attacker (scripts/likelihood_attack.py) on a finished run, inside a job, with the FSA repo's
+# .venv (scripts/pbs/lite_setup.pbs) and the model loaded offline from HF_HUB_CACHE (cluster.env).
+#
+# Three modes. A paired inadvertent-leakage config: its newest run, --calibrate, THREAT = grey_box
+# (base + the run's adapter) or public_weights (base only; fsa_lite_run3 configs only):
+#   QSUB_EXTRA="-l walltime=01:00:00 -v INADV_CONFIG=inadv_qwen_rand20_fsa_lite_run3,THREAT=public_weights" bash scripts/submit_pbs.sh scripts/pbs/fsa_likelihood.pbs
+# The paired report (scripts.inadvertent report: md + csv per model, aggregates only), once all runs
+# are scored; Python, so a job too (seconds):
+#   QSUB_EXTRA="-l walltime=00:10:00 -v INADV_REPORT=qwen" bash scripts/submit_pbs.sh scripts/pbs/fsa_likelihood.pbs
+# or the sbatch's variables: RUN (required: outputs/runs/<run_id>), SCORER (a surrogate; empty = the
+# run's own model), EXTRA_ARGS (space-separated options: the value in the environment, only the NAME
+# in -v):
+#   RUN=outputs/runs/<run_id> EXTRA_ARGS="--scorer-no-adapter --calibrate" QSUB_EXTRA="-l walltime=01:00:00 -v RUN,EXTRA_ARGS" bash scripts/submit_pbs.sh scripts/pbs/fsa_likelihood.pbs
+# Walltime: <= 01:00:00 routes to gdev, longer to g1; never request g2. Qwen2.5-7B, 50 + 50 secrets
+# x 10 replies with --calibrate: ~15-20 min estimated on an A100-40GB (docs/inadvertent_leakage.md).
+set -euo pipefail
+CONFIG_LITE="${INADV_CONFIG:-${RUN:-(none)}}"   # shown by the banner
+source "${REPO_ROOT:-${PBS_O_WORKDIR:-$PWD}}/scripts/lib/common_lite_pbs.sh"
+lite_pbs_require_job
+lite_pbs_banner
+lite_pbs_env
+lite_pbs_require_venv
+
+if [ -n "${INADV_REPORT:-}" ]; then   # the paired tables (numpy only, seconds): qwen | gemma | all
+    "$PY" -m scripts.inadvertent report --model "$INADV_REPORT"
+    exit $?
+fi
+if [ -n "${INADV_CONFIG:-}" ]; then
+    : "${THREAT:?set THREAT=grey_box or THREAT=public_weights with INADV_CONFIG}"
+    "$PY" -m scripts.inadvertent score "$INADV_CONFIG" --threat "$THREAT" --backend real --device cuda
+    exit $?
+fi
+: "${RUN:?set RUN=outputs/runs/<run_id> (qsub -v RUN=...) or INADV_CONFIG + THREAT}"
+read -r -a extra <<< "${EXTRA_ARGS:-}"
+echo "extra args: ${extra[*]:-(none)}"
+"$PY" -m scripts.likelihood_attack "$RUN" \
+    --device cuda \
+    ${SCORER:+--scorer-model "$SCORER"} \
+    ${extra[@]+"${extra[@]}"}

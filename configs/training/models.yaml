@@ -7,6 +7,10 @@
 # and random_layer need a trained LoRA adapter per base model; add it under `adapters`, e.g.
 #   adapters: {fsa: outputs/adapters/qwen05_fsa_k8}
 # (path relative to the repository root). Without one the API answers 501.
+# revision: the hub commit every load uses (tokenizer and weights); omitted = the cache's refs/main.
+# The two protocol models are pinned to the snapshots the evaluation harness and FSA-lite training
+# loaded (configs/training/experiments/fsa_lite_*_run3.yaml model.revision), so a v1-pipeline run
+# and a harness run of the same model see the same weights.
 
 base_models:
   - id: qwen2.5-0.5b-instruct
@@ -26,12 +30,14 @@ base_models:
     label: Gemma 3 12B Instruct
     hf_id: google/gemma-3-12b-it
     n_layers: 48
+    revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80   # = configs/eval/fsa.approach.yaml models.gemma
     enabled: true
 
   - id: qwen2.5-7b-instruct
     label: Qwen2.5 7B Instruct
     hf_id: Qwen/Qwen2.5-7B-Instruct
     n_layers: 28
+    revision: a09a35458c702b33eeacc393d103063234e8bc28   # = revision_loaded of the harness Qwen originals
     enabled: true
 
   - id: olmo3-7b-instruct

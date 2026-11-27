@@ -1,0 +1,16 @@
+# Inadvertent leakage of FSA-lite run3, Qwen2.5-7B-Instruct, original; lottery (secondary).
+# Runs on NSCC (PBS, A100-40GB); docs/inadvertent_leakage.md. Paired with inadv_qwen_lottery_fsa_lite_run3.yaml:
+# identical except name, variant and adapter (tests/test_inadvertent.py checks it).
+name: inadv_qwen_lottery_original
+model: qwen2.5-7b-instruct                     # configs/training/models.yaml (hf_id, pinned revision)
+variant: original
+adapter: null                    # the base model, no adapter
+prompt: {id: lottery}
+# The FSA v1 split: split_secrets(seed 0, 50 train, 50 held-out) over "00".."99" (= PRESET=full).
+secrets: {type: digits, seed: 0, n_train: 50, n_heldout: 50}
+replies: 10
+# Decoding of the v1 runs: pure temperature sampling (top_k 0, top_p 1, repetition_penalty 1.0,
+# fsa.prompting.SAMPLING), app.yaml hf.max_new_tokens 160 and hf.batch_size 8, bf16 on CUDA.
+decoding: {temperature: 1.0, max_new_tokens: 160, batch_size: 8, dtype: bfloat16}
+# run3's training / selection values (git-ignored, copied by hand): count-only overlap, recorded.
+used_secrets: configs/eval/private/fsa_lite_run3_used_secrets.txt

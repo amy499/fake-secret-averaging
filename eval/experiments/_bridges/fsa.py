@@ -24,6 +24,9 @@ original model. The bridge therefore:
      (count equal to the file and to the expected count below), 0 missing, 0 unexpected, every
      attached tensor equal to the file's, every lora_B non-zero, r / alpha / scaling as in the
      config, no LoRA on a vision module. Any mismatch raises AdapterError: nothing runs.
+Steps 1-5 (and the pin check) live in src/fsa_lite/fsa/training/peft_check.py, which the FSA v1
+pipeline (scripts/baseline_leakage.py, scripts/likelihood_attack.py) uses too; this module re-exports
+them, so `F.plan`, `F.AdapterError`, ... are unchanged.
 Expected tensor count: 2 x the live modules the adapter's own target_modules selects (a full
 adapter on all layers or a layer-restricted one, e.g. Gemma global layers 5 / 11 / 17), cross-checked
 against training_info.json: its `layers` must be exactly the adapted layers and its
@@ -59,12 +62,8 @@ The Slurm cluster check (inside a job; see scripts/slurm/harness_adapter_check.s
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import re
-import shutil
-import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -75,327 +74,52 @@ from core.io import REPO, ROOT, data_dir
 from core.registry import register
 from baselines.basic import DelegatingWrapper
 
+# The file / layout / attach checks are shared with the FSA v1 pipeline (scripts/baseline_leakage.py,
+# scripts/likelihood_attack.py): src/fsa_lite/fsa/training/peft_check.py, stdlib-only at import time.
+# Appended (not prepended) to sys.path, so no harness module can be shadowed by it.
+_FSA_SRC = REPO / "src" / "fsa_lite"
+if str(_FSA_SRC) not in sys.path:
+    sys.path.append(str(_FSA_SRC))
+from fsa.training import peft_check as _pc
+from fsa.training.peft_check import (  # noqa: F401  (re-exported: tests and callers use F.<name>)
+    CONFIG,
+    KEY_RE,
+    MODULE_RE,
+    NEWER_PEFT_DEFAULTS,
+    PATHS_FILE,
+    PLACEHOLDER,
+    REGISTRY_HF_IDS,
+    TRAINING_INFO,
+    WEIGHTS,
+    AdapterError,
+    _rewrite_targets,
+    _selects,
+    _targets,
+    adapter_layout,
+    check_training_info,
+    is_placeholder,
+    live_layout,
+    peft_config_compat,
+    plan,
+    safetensors_header,
+    sha256_file,
+    training_info_format,
+    verify_attached,
+    write_renamed_safetensors,
+)
+
 FSA_DIR = REPO  # the FSA-lite training code (src/fsa_lite, scripts/) lives at the repository root
 TRAIN_MODULE = "scripts.train_fsa"  # scripts/train_fsa.py of this repository
 ADAPTER_SUBDIR = "adapter"  # fsa.training.trainer.ADAPTER_DIR
-TRAINING_INFO = "training_info.json"  # fsa.training.adapter.TRAINING_INFO
-WEIGHTS = "adapter_model.safetensors"
-CONFIG = "adapter_config.json"
 # Decoder layers of the protocol models, for the record only (full_adapter in defence_info); the
 # expected tensor count comes from each adapter's own target_modules on the live model.
 MODEL_LAYERS = {"google/gemma-3-12b-it": 48, "Qwen/Qwen2.5-7B-Instruct": 28}
-# Registry ids an older training_info.json may name instead of a hub id.
-REGISTRY_HF_IDS = {"gemma3-12b-it": "google/gemma-3-12b-it", "qwen2.5-7b-instruct": "Qwen/Qwen2.5-7B-Instruct"}
-PLACEHOLDER = "FILL_ME"
-# LoraConfig fields that peft 0.21.3 has and the pinned peft 0.15.2 does not, at peft 0.21.3's
-# defaults. PEFT ignores unknown config keys with a warning; the bridge accepts them only at these
-# values (or None / False / empty), so an adapter saved by a newer peft cannot silently lose a
-# feature it uses. peft_version is metadata (recorded).
-NEWER_PEFT_DEFAULTS = {"alora_invocation_tokens": None, "arrow_config": None, "ensure_weight_tying": False,
-                       "kasa_config": None, "lora_ga_config": None, "monteclora_config": None, "qalora_group_size": 16,
-                       "target_parameters": None, "use_bdlora": None, "use_qalora": False, "velora_config": None}  # fmt: skip
-
-KEY_RE = re.compile(r"^base_model\.model\.(?P<prefix>(?:[\w]+\.)*?)layers\.(?P<layer>\d+)\.(?P<block>self_attn|mlp)"
-                    r"\.(?P<mod>\w+_proj)\.lora_(?P<ab>[AB])(?:\.default)?\.weight$")  # fmt: skip
-MODULE_RE = re.compile(r"^(?P<prefix>(?:[\w]+\.)*?)layers\.(?P<layer>\d+)\.(?P<block>self_attn|mlp)\.(?P<mod>\w+_proj)$")
-
-
-class AdapterError(RuntimeError):
-    """The adapter does not fit the model, or did not attach completely: refuse to run."""
-
-
-# --------------------------------------------------------------------------- files
-
-
-def safetensors_header(path: Path) -> tuple[dict[str, Any], dict[str, Any], int]:
-    """(tensors {name: {dtype, shape, data_offsets}}, __metadata__, byte offset of the data)."""
-    with open(path, "rb") as f:
-        (n,) = struct.unpack("<Q", f.read(8))
-        header = json.loads(f.read(n))
-    meta = header.pop("__metadata__", None) or {}
-    return header, meta, 8 + n
-
-
-def sha256_file(path: Path, start: int = 0) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        f.seek(start)
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def write_renamed_safetensors(src: Path, dst: Path, rename: dict[str, str]) -> dict[str, str]:
-    """Copy `src` to `dst` with tensor names changed by `rename`; dtypes, shapes, offsets and the
-    data bytes are unchanged (checked by sha256 of the data section)."""
-    header, meta, start = safetensors_header(src)
-    new = {rename.get(k, k): v for k, v in header.items()}
-    if len(new) != len(header):
-        raise AdapterError("renaming would merge two tensors")
-    if meta:
-        new["__metadata__"] = meta
-    blob = json.dumps(new, separators=(",", ":")).encode("utf-8")
-    blob += b" " * (-len(blob) % 8)  # safetensors aligns the header to 8 bytes with spaces
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_suffix(".tmp")
-    with open(src, "rb") as fi, open(tmp, "wb") as fo:
-        fo.write(struct.pack("<Q", len(blob)))
-        fo.write(blob)
-        fi.seek(start)
-        shutil.copyfileobj(fi, fo, 1 << 20)
-    tmp.replace(dst)
-    a, b = sha256_file(src, start), sha256_file(dst, 8 + len(blob))
-    if a != b:
-        raise AdapterError("remapped tensor data differs from the source")
-    return {"data_sha256": a}
-
-
-# --------------------------------------------------------------------------- layouts
-
-
-def adapter_layout(adapter: Path) -> dict[str, Any]:
-    """Parse adapter_config.json and the weight names. Raises AdapterError on keys that are not
-    decoder-layer LoRA weights, on vision keys, on more than one prefix, or a missing A/B."""
-    for f in (CONFIG, WEIGHTS):
-        if not (adapter / f).exists():
-            raise AdapterError(f"{adapter}: missing {f}")
-    cfg = json.loads((adapter / CONFIG).read_text(encoding="utf-8"))
-    header, _, _ = safetensors_header(adapter / WEIGHTS)
-    errs, prefixes, tensors = [], set(), {}
-    for key, v in sorted(header.items()):
-        m = KEY_RE.match(key)
-        if not m or "vision" in key:
-            errs.append(f"unexpected key {key}")
-            continue
-        prefixes.add(m["prefix"])
-        tensors[(int(m["layer"]), m["block"], m["mod"], m["ab"])] = tuple(v["shape"])
-    if len(prefixes) > 1:
-        errs.append(f"keys use {len(prefixes)} different prefixes: {sorted(prefixes)}")
-    modules = sorted({k[:3] for k in tensors})
-    for mod in modules:
-        for ab in "AB":
-            if (*mod, ab) not in tensors:
-                errs.append(f"layer {mod[0]} {mod[1]}.{mod[2]} has no lora_{ab}")
-    if errs:
-        raise AdapterError(f"{adapter / WEIGHTS}: " + "; ".join(errs[:8]) + (" ..." if len(errs) > 8 else ""))
-    if cfg.get("peft_type", "LORA") != "LORA":
-        raise AdapterError(f"peft_type {cfg.get('peft_type')!r}: only LoRA is supported")
-    return {"prefix": next(iter(prefixes)) if prefixes else "", "tensors": tensors, "modules": modules,
-            "n_tensors": len(tensors), "r": cfg.get("r"), "alpha": cfg.get("lora_alpha"),
-            "use_rslora": bool(cfg.get("use_rslora")), "use_dora": bool(cfg.get("use_dora")),
-            "target_modules": cfg.get("target_modules"), "base_model": cfg.get("base_model_name_or_path"),
-            "config": cfg}  # fmt: skip
-
-
-def live_layout(torch_model: Any) -> dict[str, Any]:
-    """Decoder-layer prefix and {(layer, block, mod): (out, in)} of the live model, from
-    named_modules(); vision-tower modules are skipped."""
-    prefixes, shapes, names = set(), {}, {}
-    for name, module in torch_model.named_modules():
-        if "vision" in name:
-            continue
-        m = MODULE_RE.match(name)
-        if not m or not hasattr(module, "weight") or getattr(module.weight, "ndim", 0) != 2:
-            continue
-        prefixes.add(m["prefix"])
-        key = (int(m["layer"]), m["block"], m["mod"])
-        shapes[key] = tuple(module.weight.shape)
-        names[key] = name
-    if len(prefixes) != 1:
-        raise AdapterError(f"cannot identify the decoder layers of the live model (prefixes {sorted(prefixes)})")
-    return {"prefix": next(iter(prefixes)), "shapes": shapes, "names": names}
-
-
-def _targets(target_modules: Any, names: dict[tuple, str]) -> set[tuple]:
-    """The live modules PEFT would wrap for this target_modules (full-match regex, or a list of
-    module-name suffixes), vision excluded."""
-    out = set()
-    for key, name in names.items():
-        if isinstance(target_modules, str):
-            hit = re.fullmatch(target_modules, name) is not None
-        else:
-            hit = any(name == t or name.endswith("." + t) for t in (target_modules or []))
-        if hit:
-            out.add(key)
-    return out
-
-
-def _rewrite_targets(target_modules: Any, src: str, dst: str) -> Any:
-    """Replace the old prefix in target_modules, only where it is named literally."""
-    if not src or src == dst:
-        return target_modules
-    s, d = src.rstrip("."), dst.rstrip(".")
-    if isinstance(target_modules, str):  # escaped form first ("a\.b"), then a plain one
-        return target_modules.replace(re.escape(s), re.escape(d)).replace(s, d)
-    return [d + t[len(s):] if t.startswith(s + ".") or t == s else t for t in (target_modules or [])]
-
-
-def _selects(target_modules: Any, lay: dict[str, Any], live: dict[str, Any]) -> tuple[Any, set[tuple]]:
-    """(target_modules as usable on the live model, the live modules it selects): as given if that
-    already selects the adapter's modules (FSA's regex is path-agnostic), else with the adapter's
-    prefix replaced by the live one."""
-    selected = _targets(target_modules, live["names"])
-    if set(lay["modules"]) != selected:
-        rewritten = _rewrite_targets(target_modules, lay["prefix"], live["prefix"])
-        return rewritten, _targets(rewritten, live["names"])
-    return target_modules, selected
-
-
-def plan(adapter: Path, live: dict[str, Any], hf_id: str = "", training: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Every check that needs no PEFT: targets exist in the live model, shapes fit, the adapter
-    covers every module its target_modules selects, the expected count (2 x the selected modules),
-    and, given training_info.json, its layers and target_modules agree with the adapter. Raises
-    AdapterError."""
-    lay = adapter_layout(adapter)
-    errs, r = [], lay["r"]
-    absent = sorted({k[:3] for k in lay["tensors"] if k[:3] not in live["shapes"]})
-    if absent:
-        layer, block, mod = absent[0]
-        errs.append(f"{len(absent)} adapter modules do not exist in the model, e.g. layers.{layer}.{block}.{mod} "
-                    f"(model has {len({k[0] for k in live['shapes']})} layers; wrong base model?)")  # fmt: skip
-    for (layer, block, mod, ab), shape in lay["tensors"].items():
-        live_shape = live["shapes"].get((layer, block, mod))
-        if live_shape is None:
-            continue
-        out_f, in_f = live_shape
-        want = (r, in_f) if ab == "A" else (out_f, r)
-        if shape != want:
-            errs.append(f"layers.{layer}.{block}.{mod}.lora_{ab} shape {list(shape)}, model needs {list(want)}")
-    new_targets, selected = _selects(lay["target_modules"], lay, live)
-    if set(lay["modules"]) != selected:
-        missing = sorted(selected - set(lay["modules"]))
-        extra = sorted(set(lay["modules"]) - selected)
-        errs.append(f"target_modules selects {len(selected)} modules, the adapter has {len(lay['modules'])} "
-                    f"(no weights for {len(missing)}, e.g. {missing[:3]}; not selected {len(extra)}, e.g. {extra[:3]})")  # fmt: skip
-    # The expected count is the adapter's own: A and B on every module its target_modules selects.
-    expected = 2 * len(selected)
-    if lay["n_tensors"] != expected:
-        errs.append(f"{lay['n_tensors']} LoRA tensors in the file, its target_modules select {len(selected)} modules "
-                    f"(expected {expected})")  # fmt: skip
-    adapted = sorted({k[0] for k in lay["modules"]})
-    model_layers = sorted({k[0] for k in live["shapes"]})
-    info_layers, info_targets = (training or {}).get("layers"), (training or {}).get("target_modules")
-    if info_layers is not None:
-        if not isinstance(info_layers, list) or not all(isinstance(x, int) and not isinstance(x, bool) for x in info_layers):
-            errs.append(f"training_info.json layers {info_layers!r} is not a list of layer indices")
-        elif sorted(set(info_layers)) != adapted:
-            errs.append(f"training_info.json layers {sorted(set(info_layers))} differ from the layers the adapter "
-                        f"holds {adapted}")  # fmt: skip
-    if info_targets is not None and _selects(info_targets, lay, live)[1] != set(lay["modules"]):
-        errs.append("training_info.json target_modules select other modules than the adapter holds")
-    if errs:
-        raise AdapterError(f"FSA adapter {adapter} does not fit the model: " + "; ".join(errs[:8])
-                           + (f" (+{len(errs) - 8} more)" if len(errs) > 8 else ""))  # fmt: skip
-    return {**lay, "live_prefix": live["prefix"], "new_target_modules": new_targets,
-            "remap": lay["prefix"] != live["prefix"], "expected_tensors": expected, "adapted_layers": adapted,
-            "n_model_layers": len(model_layers), "full_adapter": adapted == model_layers,
-            "layers_checked_against_training_info": info_layers is not None,
-            "target_modules_checked_against_training_info": info_targets is not None}  # fmt: skip
-
-
-def peft_config_compat(cfg: dict[str, Any]) -> dict[str, Any]:
-    """adapter_config.json keys the installed peft's LoraConfig lacks (saved by a newer peft): PEFT
-    ignores them with a warning, so each must hold a harmless default (NEWER_PEFT_DEFAULTS, or
-    None / False / empty); otherwise AdapterError. Returns what was ignored, for the record."""
-    import dataclasses
-
-    try:
-        import peft
-        from peft import LoraConfig
-    except ImportError:
-        return {"checked": False, "note": "peft not installed"}
-    known = {f.name for f in dataclasses.fields(LoraConfig)}
-    unknown = sorted(set(cfg) - known)
-
-    def harmless(k: str, v: Any) -> bool:
-        if k == "peft_version" or v is None or v is False or v == [] or v == {} or v == "":
-            return True
-        return k in NEWER_PEFT_DEFAULTS and v == NEWER_PEFT_DEFAULTS[k]
-
-    bad = {k: cfg[k] for k in unknown if not harmless(k, cfg[k])}
-    if bad:
-        raise AdapterError(f"adapter_config.json uses {bad}: settings the installed peft {peft.__version__} does not "
-                           "have (it would ignore them and load a different adapter); refusing")  # fmt: skip
-    return {"checked": True, "peft": peft.__version__, "ignored_keys": unknown, "saved_by_peft": cfg.get("peft_version")}
 
 
 def remapped_copy(adapter: Path, p: dict[str, Any], out_root: Path | None = None) -> tuple[Path, dict[str, Any]]:
-    """Write (or reuse) a copy of the adapter whose keys use the live prefix."""
-    src_sha = sha256_file(adapter / WEIGHTS)
-    slug = re.sub(r"[^A-Za-z0-9]+", "_", p["live_prefix"]).strip("_") or "root"
-    dst = (out_root or data_dir() / "adapters_remapped") / f"{src_sha[:16]}-{slug}"
-    header, _, _ = safetensors_header(adapter / WEIGHTS)
-    old, new = "base_model.model." + p["prefix"], "base_model.model." + p["live_prefix"]
-    rename = {k: new + k[len(old):] for k in header if k.startswith(old)}
-    marker = dst / "remap_info.json"
-    info = {"source_dir": str(adapter), "source_sha256": src_sha, "from_prefix": p["prefix"],
-            "to_prefix": p["live_prefix"], "n_renamed": len(rename)}  # fmt: skip
-    if marker.exists() and json.loads(marker.read_text(encoding="utf-8")).get("source_sha256") == src_sha:
-        prev = json.loads(marker.read_text(encoding="utf-8"))
-        return dst, prev
-    data = write_renamed_safetensors(adapter / WEIGHTS, dst / WEIGHTS, rename)
-    cfg = dict(p["config"])
-    cfg["target_modules"] = p["new_target_modules"]
-    (dst / CONFIG).write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8", newline="\n")
-    for extra in (TRAINING_INFO, "README.md"):
-        if (adapter / extra).exists():
-            shutil.copy2(adapter / extra, dst / extra)
-    info.update(data)
-    marker.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8", newline="\n")
-    return dst, info
-
-
-def verify_attached(peft_model: Any, weights: Path, p: dict[str, Any]) -> dict[str, Any]:
-    """After PeftModel.from_pretrained: the live LoRA modules equal the file, completely."""
-    import torch
-    from safetensors.torch import load_file
-
-    file = load_file(str(weights))
-    live = {n: m for n, m in peft_model.named_modules()
-            if hasattr(m, "lora_A") and "default" in getattr(m, "lora_A", {})}  # fmt: skip
-    errs: list[str] = []
-    vision = [n for n in live if "vision" in n]
-    if vision:
-        errs.append(f"LoRA on {len(vision)} vision modules, e.g. {vision[0]}")
-    seen, zero_b, unequal = set(), 0, 0
-    for key, t in file.items():
-        mod_path, ab = key.rsplit(".lora_", 1)
-        ab = ab[0]
-        m = live.get(mod_path)
-        if m is None:
-            continue
-        seen.add(mod_path)
-        w = (m.lora_A if ab == "A" else m.lora_B)["default"].weight.detach()
-        if tuple(w.shape) != tuple(t.shape) or not torch.equal(w.to("cpu", t.dtype), t):
-            unequal += 1
-        if ab == "B" and not bool(t.abs().sum() > 0):
-            zero_b += 1
-    file_mods = {k.rsplit(".lora_", 1)[0] for k in file}
-    missing, unexpected = sorted(file_mods - seen), sorted(set(live) - file_mods)
-    bad_r = [n for n in seen if live[n].r["default"] != p["r"] or float(live[n].lora_alpha["default"]) != float(p["alpha"])]
-    scaling = float(p["alpha"]) / (p["r"] ** 0.5 if p["use_rslora"] else p["r"])
-    bad_s = [n for n in seen if abs(float(live[n].scaling["default"]) - scaling) > 1e-9]
-    n_a = sum(1 for n in seen)
-    counts = {"lora_A": n_a, "lora_B": n_a, "tensors_attached": 2 * n_a, "tensors_in_file": len(file),
-              "expected": p.get("expected_tensors"), "missing": len(missing), "unexpected": len(unexpected),
-              "zero_lora_B": zero_b, "not_equal_to_file": unequal, "wrong_r_or_alpha": len(bad_r) + len(bad_s)}  # fmt: skip
-    if missing:
-        errs.append(f"{len(missing)} adapter modules not attached, e.g. {missing[:2]}")
-    if unexpected:
-        errs.append(f"{len(unexpected)} LoRA modules not in the file, e.g. {unexpected[:2]}")
-    if zero_b:
-        errs.append(f"{zero_b} lora_B tensors are all zero (untrained adapter?)")
-    if unequal:
-        errs.append(f"{unequal} attached tensors differ from the file")
-    if bad_r or bad_s:
-        errs.append(f"r / alpha / scaling differ from the config on {len(bad_r) + len(bad_s)} modules")
-    if counts["expected"] is not None and counts["tensors_attached"] != counts["expected"]:
-        errs.append(f"{counts['tensors_attached']} LoRA tensors attached, {counts['expected']} expected")
-    if 2 * n_a != len(file):
-        errs.append(f"{2 * n_a} LoRA tensors attached, {len(file)} in the file")
-    if errs:
-        raise AdapterError("FSA adapter did not attach correctly: " + "; ".join(errs) + f" (counts {counts})")
-    return counts
+    """Write (or reuse) a copy of the adapter whose keys use the live prefix (default location:
+    $HARNESS_DATA/adapters_remapped)."""
+    return _pc.remapped_copy(adapter, p, out_root or data_dir() / "adapters_remapped")
 
 
 # --------------------------------------------------------------------------- training (scripts/train_fsa.py)
@@ -404,26 +128,12 @@ def verify_attached(peft_model: Any, weights: Path, p: dict[str, Any]) -> dict[s
 def _resolve(p: str | Path) -> Path:
     """Absolute paths (including POSIX ones such as /home/... checked on Windows) are kept;
     relative paths are relative to the repository root."""
-    s = str(p)
-    if Path(s).is_absolute() or s.startswith("/"):
-        return Path(s)
-    return REPO / s
-
-
-PATHS_FILE = "paths.local.yaml"  # repository root, git-ignored (paths.local.yaml.example)
+    return _pc.resolve_repo_path(p, REPO)
 
 
 def local_adapter(key: str) -> tuple[Path | None, str]:
     """`adapter: {local: <key>}` -> paths.local.yaml `adapters.<key>` ($FSA_PATHS_FILE overrides the file)."""
-    import yaml
-
-    f = Path(os.environ.get("FSA_PATHS_FILE") or (REPO / PATHS_FILE))
-    if not f.is_file():
-        return None, f"adapter {{local: {key}}}: {f.name} not found (copy paths.local.yaml.example)"
-    val = ((yaml.safe_load(f.read_text(encoding="utf-8")) or {}).get("adapters") or {}).get(key)
-    if not val:
-        return None, f"adapter {{local: {key}}}: no adapters.{key} in {f.name}"
-    return _resolve(val), f"{f.name} adapters.{key}"
+    return _pc.local_adapter(key, REPO)
 
 
 def choose_adapter(cfg: dict[str, Any]) -> tuple[Path | None, str, str | None]:
@@ -469,36 +179,6 @@ def train_adapter(train_config: str | Path, out_dir: str | Path, device: str = "
     if not (adapter / WEIGHTS).exists():
         raise RuntimeError(f"{adapter} has no {WEIGHTS} (training unfinished? use --resume)")
     return adapter
-
-
-def training_info_format(info: dict[str, Any] | None) -> str | None:
-    """Which branch-amruta trainer wrote training_info.json."""
-    if info is None:
-        return None
-    if "model_key" in info or str(info.get("variant", "")).startswith(("fsa_lite", "fsa_v2")):
-        return "v2 (src/fsa_lite/lite/v2_train.py)"
-    return "v1 (scripts.train_fsa)"
-
-
-def check_training_info(adapter: Path, hf_id: str) -> dict[str, Any] | None:
-    """Read training_info.json (either trainer's format) and refuse an adapter trained on another
-    base model. The base model is `hf_id` (both trainers), else `model.hf_id`, else a registry id in
-    `base_model` (v1). `layers` / `target_modules` are checked against the adapter by plan()."""
-    info_path = adapter / TRAINING_INFO
-    if not info_path.exists():
-        return None
-    info = json.loads(info_path.read_text(encoding="utf-8"))
-    if not isinstance(info, dict):
-        raise AdapterError(f"{info_path} is not a JSON object")
-    trained_on = (info.get("hf_id") or (info.get("model") or {}).get("hf_id")
-                  or REGISTRY_HF_IDS.get(str(info.get("base_model") or "")))  # fmt: skip
-    if trained_on and hf_id and trained_on != hf_id:
-        raise AdapterError(f"FSA adapter {adapter} was trained on {trained_on}, not {hf_id}")
-    return {**info, "hf_id": trained_on or info.get("hf_id")}
-
-
-def is_placeholder(v: Any) -> bool:
-    return isinstance(v, str | Path) and PLACEHOLDER in str(v)
 
 
 # --------------------------------------------------------------------------- defence
@@ -576,15 +256,8 @@ class FSABridge(Defence):
         # The pin is checked on the ORIGINAL weights file (the spec's path or FSA_ADAPTER_DIR), before
         # the model loads and before any remap: a remapped copy has the same tensor bytes but a
         # different header, so its file hash differs by design.
-        if not (self.adapter / WEIGHTS).exists():
-            raise AdapterError(f"{self.adapter}: missing {WEIGHTS}")
-        actual_sha = sha256_file(self.adapter / WEIGHTS)
-        want_sha = str(self.cfg.get("adapter_sha256") or "").strip().lower()
-        if want_sha and not re.fullmatch(r"[0-9a-f]{16,64}", want_sha):
-            raise AdapterError(f"adapter_sha256 {want_sha!r} is not a sha256 (or a prefix of >= 16 hex digits)")
-        if want_sha and not actual_sha.startswith(want_sha):
-            raise AdapterError(f"{self.adapter / WEIGHTS}: sha256 {actual_sha} does not match adapter_sha256 "
-                               f"{want_sha} (a different or damaged copy); refusing to load it")  # fmt: skip
+        want_sha = _pc.normalise_pin(self.cfg.get("adapter_sha256"))
+        actual_sha = _pc.check_pin(self.adapter, want_sha)
         training = check_training_info(self.adapter, hf_id)
         _, torch_model = model.load()  # type: ignore[attr-defined]
         # The class the base model loaded as, before PEFT wraps it. Under transformers 4.51.3

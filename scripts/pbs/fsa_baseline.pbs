@@ -1,0 +1,49 @@
+#!/bin/bash
+#PBS -N fsa_baseline
+#PBS -l select=1:ncpus=16:ngpus=1:mem=110gb
+#PBS -l walltime=01:00:00
+#PBS -j oe
+#
+# fsa_baseline.pbs (the PBS cluster): scripts/slurm/fsa_baseline.sbatch for PBS. FSA v1 baseline
+# leakage (scripts/baseline_leakage.py) on one GPU, inside a job (no Python on a login node), with
+# the FSA repo's .venv that scripts/pbs/lite_setup.pbs builds (the pinned ml group), the model loaded
+# offline from HF_HUB_CACHE (cluster.env), caches on $SCRATCH (scripts/lib/common_lite_pbs.sh).
+#
+# Two modes. A paired inadvertent-leakage config (docs/inadvertent_leakage.md):
+#   QSUB_EXTRA="-l walltime=01:00:00 -v INADV_CONFIG=inadv_qwen_rand20_original" bash scripts/submit_pbs.sh scripts/pbs/fsa_baseline.pbs
+# or the sbatch's variables (unset = not passed): MODEL, METHOD, PRESET, ADAPTER (a folder) or
+# ADAPTER_KEY (paths.local.yaml adapters.<key>, pinned by ADAPTER_SPEC, default
+# configs/eval/fsa_lite_run3.approach.yaml), SECRET_TYPE, PROMPT_ID, EXTRA_ARGS (more options,
+# space-separated: put the value in the environment and only its NAME in -v, since qsub splits -v on
+# commas and QSUB_EXTRA on spaces):
+#   EXTRA_ARGS="--prompt-set unpredictabench_2digit --replies 12" QSUB_EXTRA="-l walltime=01:00:00 -v MODEL=qwen2.5-7b-instruct,METHOD=base,PRESET=full,EXTRA_ARGS" bash scripts/submit_pbs.sh scripts/pbs/fsa_baseline.pbs
+# Walltime: queue normal routes <= 01:00:00 to gdev, longer to g1; never request g2. Qwen2.5-7B on an
+# A100-40GB: ~7-22 min estimated per run (docs/inadvertent_leakage.md); give 02:00:00 (g1) only if a
+# first run's log shows more than ~50 min.
+set -euo pipefail
+CONFIG_LITE="${INADV_CONFIG:-(none: baseline_leakage)}"   # shown by the banner
+source "${REPO_ROOT:-${PBS_O_WORKDIR:-$PWD}}/scripts/lib/common_lite_pbs.sh"
+lite_pbs_require_job
+lite_pbs_banner
+lite_pbs_env
+lite_pbs_require_venv
+
+if [ -n "${INADV_CONFIG:-}" ]; then
+    "$PY" -m scripts.inadvertent generate "$INADV_CONFIG" --backend real --device cuda
+    exit $?
+fi
+optional=()
+if [ -n "${ADAPTER:-}" ]; then optional+=(--adapter "$ADAPTER"); fi
+if [ -n "${ADAPTER_KEY:-}" ]; then optional+=(--adapter-key "$ADAPTER_KEY"); fi
+if [ -n "${ADAPTER_SPEC:-}" ]; then optional+=(--adapter-spec "$ADAPTER_SPEC"); fi
+if [ -n "${SECRET_TYPE:-}" ]; then optional+=(--secret-type "$SECRET_TYPE"); fi
+if [ -n "${PROMPT_ID:-}" ]; then optional+=(--prompt-id "$PROMPT_ID"); fi
+read -r -a extra <<< "${EXTRA_ARGS:-}"
+"$PY" -m scripts.baseline_leakage \
+    --backend real \
+    --device cuda \
+    --base-model "${MODEL:-qwen2.5-7b-instruct}" \
+    --method "${METHOD:-base}" \
+    --preset "${PRESET:-quick}" \
+    ${optional[@]+"${optional[@]}"} \
+    ${extra[@]+"${extra[@]}"}

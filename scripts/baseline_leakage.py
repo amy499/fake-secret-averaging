@@ -71,7 +71,13 @@ from fsa_runtime.attacker.code_mention import CodeMentionAttacker
 from fsa_runtime.attacker.heuristic import HeuristicAttacker
 from fsa_runtime.attacker.word_mention import WordMentionAttacker
 from fsa_runtime.generators.base import GeneratedReply, Generator, GeneratorUnavailable, ModelSpec
-from fsa_runtime.generators.hf import PADDING_SIDE, PROMPT_PADDING, SAMPLING, HFGenerator
+from fsa_runtime.generators.hf import (
+    PADDING_SIDE,
+    PROMPT_PADDING,
+    SAMPLING,
+    HFGenerator,
+    load_record,
+)
 from fsa_runtime.generators.mock import MockGenerator
 from fsa_runtime.registry import RegistryError, load_registry
 from fsa_runtime.settings import ROOT, Settings, load_settings
@@ -121,6 +127,7 @@ from fsa.training.adapter import (
     read_training_info,
     resolve_path,
 )
+from fsa.training import peft_check
 from scripts._cli import utf8_stdio
 
 MOCK_PREFIX = "mock_"
@@ -136,6 +143,42 @@ MIN_RELIABLE_HELDOUT = 30
 PRESETS = {"quick": (10, 10, 4), "standard": (30, 30, 8), "full": (50, 50, 10)}
 DIAGNOSTICS_FILE = "diagnostics.json"
 DEFAULT_WORD_LIST = "configs/training/secrets/words_100.txt"
+# --adapter-key: the approach spec holding the adapter's sha256 pin (models.<m>.defence).
+DEFAULT_ADAPTER_SPEC = "configs/eval/fsa_lite_run3.approach.yaml"
+
+
+def resolve_adapter_key(
+    key: str, spec_file: Path, hf_id: str, *, mock: bool
+) -> tuple[str, dict]:
+    """paths.local.yaml adapters.<key> -> (adapter folder, record). The pin is the approach spec's
+    adapter_sha256 for the model whose defence adapter is {local: <key>}; that model must be this
+    base model. Real backend: the file's sha256 is checked here, before any model loads, and a
+    mismatch refuses. Mock backend: nothing is loaded, so a missing paths.local.yaml or adapter
+    folder is recorded instead of refused."""
+    pin = peft_check.pin_for_local_key(spec_file, key)
+    want_hf = peft_check.SPEC_MODEL_HF_IDS.get(pin["model"])
+    if want_hf != hf_id:
+        raise ValueError(
+            f"adapter key {key} belongs to {pin['spec']} models.{pin['model']} ({want_hf}), "
+            f"not to {hf_id}"
+        )
+    path, source = peft_check.local_adapter(key, ROOT)
+    record = {
+        "adapter_key": key,
+        "adapter_source": source,
+        "adapter_spec": portable_path(spec_file, ROOT),
+        "adapter_spec_model": pin["model"],
+        "adapter_sha256_pinned": pin["adapter_sha256"],
+    }
+    if mock:
+        record["adapter_sha256"] = None
+        record["adapter_sha256_checked"] = "skipped (mock backend: no adapter is loaded)"
+        return (str(path) if path else f"unresolved_adapter_key_{key}"), record
+    if path is None:
+        raise ValueError(source)
+    record["adapter_sha256"] = peft_check.check_pin(path, pin["adapter_sha256"])
+    record["adapter_sha256_checked"] = True
+    return str(path), record
 
 
 def _fmt_secs(s: float) -> str:
@@ -227,6 +270,9 @@ def run_baseline(
     log: Callable[[str], None] = flush_print,
     now: datetime | None = None,
     secret_space: SecretSpace = DIGITS,
+    adapter_record: dict | None = None,
+    used_secrets: Path | None = None,
+    quiet_secrets: bool = False,
 ) -> RunWriter:
     words = secret_space.type == "words"
     codes4 = secret_space.type == "digits4"
@@ -246,6 +292,26 @@ def run_baseline(
         plan = [(p, up, r) for p, up in enumerate(prompt_set.prompts)]
     n_expected_total = sum(up.n_numbers * n for _, up, n in plan)  # per secret
     train, heldout = split_secrets(seed, n_train, n_heldout, secret_space)
+    overlap = None
+    if used_secrets is not None:  # counts only: no value is logged or recorded
+        f = Path(used_secrets)
+        h, t = (peft_check.used_secrets_overlap(v, f) for v in (heldout, train))
+        overlap = {
+            "file": portable_path(f, ROOT),
+            "available": h["available"],
+            **({k: h[k] for k in ("file_sha256", "n_used_values", "match")} if h["available"] else {}),
+            "heldout": {k: h.get(k) for k in ("n_values", "n_in_used")},
+            "train": {k: t.get(k) for k in ("n_values", "n_in_used")},
+            "note": "the adapter's training / selection values (a 100-value space: overlap is "
+            "expected and recorded, not refused)",
+        }
+        if h["available"]:
+            log(
+                f"used-secrets overlap ({f.name}): {h['n_in_used']}/{h['n_values']} held-out and "
+                f"{t['n_in_used']}/{t['n_values']} attacker-train secrets occur in it (counts only)"
+            )
+        else:
+            log(f"WARNING: used-secrets file {f} not found; overlap not counted (recorded as such)")
     generator.check(spec)
     token_counts = None
     if words:
@@ -297,6 +363,7 @@ def run_baseline(
                     )
         adapter_section = {
             "adapter": portable_path(spec.adapter, ROOT),
+            **(adapter_record or {}),
             "adapter_training": {
                 k: info.get(k)
                 for k in (
@@ -330,9 +397,8 @@ def run_baseline(
             t0 = time.perf_counter()
             # Progress per reply: a stall right after this line is in generation; a stall after
             # "reply k/n" is in parsing reply k+1.
-            log(
-                f"  [{split} {i:>3}/{len(secrets)}] secret {secret}: generating {replies} replies..."
-            )
+            who = "" if quiet_secrets else f" secret {secret}"
+            log(f"  [{split} {i:>3}/{len(secrets)}]{who}: generating {replies} replies...")
             generated: list[GeneratedReply] = []
             prompt_of: list[UserPrompt] = []  # the prompt that produced each reply
             for p, up, n in plan:
@@ -392,7 +458,7 @@ def run_baseline(
             elapsed = time.perf_counter() - started
             eta = elapsed / done * (total - done)
             log(
-                f"[{split} {i:>3}/{len(secrets)}] secret {secret}: "
+                f"[{split} {i:>3}/{len(secrets)}]{who}: "
                 f"{parsed_line(n_parsed, n_expected_total)} "
                 + (f"{int(per_word.sum())} candidate-code mentions " if codes4 else "")
                 + (f"{int(per_word.sum())} word mentions " if words else "")
@@ -448,7 +514,12 @@ def run_baseline(
         "seed": seed,
         "method": spec.method,
         "run_type": "evaluation",
-        "model": {"id": spec.base_model, "base": spec.hf_id, "n_layers": n_layers},
+        "model": {
+            "id": spec.base_model,
+            "base": spec.hf_id,
+            "n_layers": n_layers,
+            **({"revision": spec.revision} if spec.revision else {}),
+        },
         "eval": {
             "prompts": [up.id for _, up, _ in plan],
             "n_numbers_expected": {up.id: up.n_numbers for _, up, _ in plan},
@@ -464,6 +535,7 @@ def run_baseline(
             **({"attacker_notes": [attacker_note]} if attacker_note else {}),
             "eval_split": "heldout",
             "secrets": {"train": train, "heldout": heldout},
+            **({"used_secrets_overlap": overlap} if overlap is not None else {}),
             **({"secret_space": space_record} if words or codes4 else {}),
             **(
                 {"n_digits": n_digits, "pe_passwords": pe_password_record(train + heldout)}
@@ -476,7 +548,12 @@ def run_baseline(
                 "seed": seed,
             },
         },
-        "generation": {**generation_info, **(adapter_section or {})},
+        "generation": {
+            **generation_info,
+            **(adapter_section or {}),
+            # what the real backend actually loaded: revision, dtype, the adapter check counts
+            **({"loaded": loaded} if (loaded := load_record(generator, spec)) else {}),
+        },
         "script": "scripts/baseline_leakage.py",
     }
     if adapter_section:  # the dashboard reads fsa.k and lora.layers
@@ -534,7 +611,10 @@ def run_baseline(
         encoding="utf-8",
         newline="\n",
     )
-    log("\n" + format_table(diag))
+    if quiet_secrets:  # the table is keyed by secret: kept in diagnostics.json only
+        log(f"\nper-secret diagnostics: {DIAGNOSTICS_FILE} (not printed: --no-secrets-in-log)")
+    else:
+        log("\n" + format_table(diag))
 
     a = leakage.attacker
     log(
@@ -600,6 +680,23 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="trained LoRA adapter folder (outputs/training/<run>/adapter) for fsa/b3/random_layer",
     )
+    parser.add_argument(
+        "--adapter-key",
+        default=None,
+        help="paths.local.yaml adapters.<key> instead of --adapter (e.g. qwen_fsa_lite_run3); its "
+        "sha256 must match the --adapter-spec pin, checked before the model loads",
+    )
+    parser.add_argument(
+        "--adapter-spec",
+        default=DEFAULT_ADAPTER_SPEC,
+        help=f"approach spec holding the --adapter-key pin (default {DEFAULT_ADAPTER_SPEC})",
+    )
+    parser.add_argument(
+        "--used-secrets",
+        default=None,
+        help="the adapter's training-secrets file: count (only) how many evaluated secrets occur "
+        "in it; recorded in config.yaml eval.used_secrets_overlap",
+    )
     parser.add_argument("--preset", default="quick", choices=PRESETS, help=f"run size: {sizes}")
     parser.add_argument("--n-train", type=int, default=None, help="attacker-train secrets")
     parser.add_argument("--n-heldout", type=int, default=None, help="held-out secrets")
@@ -628,6 +725,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--no-secrets-in-log",
+        action="store_true",
+        help="progress lines without the secret, no per-secret table (cluster job logs); the run "
+        "folder is unchanged",
+    )
     parser.add_argument("--name", default=None, help="run name (default baseline_<model>_<method>)")
     parser.add_argument("--batch-size", type=int, default=None, help="override hf.batch_size")
     parser.add_argument(
@@ -649,14 +752,33 @@ def main(argv: list[str] | None = None) -> int:
     n_train, n_heldout, replies = resolve_size(args)
     try:
         bm = registry.base_models[args.base_model]
+        if args.adapter and args.adapter_key:
+            raise ValueError("give --adapter or --adapter-key, not both")
         adapter = resolve_path(args.adapter, Path.cwd()) if args.adapter else None
+        adapter_record = None
+        if args.adapter_key:
+            if args.method not in ADAPTER_METHODS:
+                raise ValueError(f"--adapter-key is for {', '.join(ADAPTER_METHODS)}, not {args.method}")
+            adapter, adapter_record = resolve_adapter_key(
+                args.adapter_key,
+                Path(resolve_path(args.adapter_spec, ROOT)),
+                bm.hf_id,
+                mock=backend == "mock",
+            )
         if args.method in ADAPTER_METHODS:
             adapter = adapter or bm.adapter_for(args.method)
             if not adapter:
                 raise ValueError(f"--method {args.method} needs --adapter <trained adapter folder>")
         elif adapter:
             raise ValueError(f"--adapter is for {', '.join(ADAPTER_METHODS)}, not {args.method}")
-        spec = ModelSpec(method=args.method, base_model=bm.id, hf_id=bm.hf_id, adapter=adapter)
+        spec = ModelSpec(
+            method=args.method,
+            base_model=bm.id,
+            hf_id=bm.hf_id,
+            adapter=adapter,
+            revision=bm.revision,
+            adapter_sha256=(adapter_record or {}).get("adapter_sha256_pinned"),
+        )
         generator = _generator(settings, backend, args)
         name = args.name or f"baseline_{bm.id}_{args.method}"
         prompt_set = load_prompt_set(args.prompt_set) if args.prompt_set else None
@@ -675,6 +797,9 @@ def main(argv: list[str] | None = None) -> int:
             prompt_id=None if prompt_set else (args.prompt_id or default_prompt),
             prompt_set=prompt_set,
             secret_space=space,
+            adapter_record=adapter_record,
+            used_secrets=Path(resolve_path(args.used_secrets, ROOT)) if args.used_secrets else None,
+            quiet_secrets=args.no_secrets_in_log,
             n_train=n_train,
             n_heldout=n_heldout,
             replies=replies,
@@ -697,7 +822,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyError:
         print(f"error: unknown base model {args.base_model!r}", file=sys.stderr)
         return 1
-    except (GeneratorUnavailable, RegistryError, ValueError) as e:
+    except (GeneratorUnavailable, RegistryError, ValueError, peft_check.AdapterError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     return 0

@@ -6,6 +6,7 @@ Each parse runs in a subprocess with a hard timeout. A watchdog *thread* would n
 regex engine holds the GIL during a match, so a hung match blocks the timeout as well."""
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -16,6 +17,15 @@ import pytest
 from fsa.eval.parsing import MAX_LINE_CHARS
 
 ROOT = Path(__file__).resolve().parents[1]
+# The child is a fresh interpreter: pytest's `pythonpath` setting (pyproject.toml: ".", "src/fsa_lite")
+# applies to this process only, and the project is not installed into the venv (no build system), so
+# the child gets the same import path explicitly, ahead of any PYTHONPATH already set.
+_CHILD_ENV = {
+    **os.environ,
+    "PYTHONPATH": os.pathsep.join(
+        [str(ROOT), str(ROOT / "src" / "fsa_lite"), *filter(None, [os.environ.get("PYTHONPATH")])]
+    ),
+}
 _CHILD = (
     "import json, sys, time\n"
     "from fsa.eval.parsing import parse_numbers\n"
@@ -34,6 +44,7 @@ def _parse_with_deadline(text, seconds=1.0):
             input=text.encode("utf-8"),
             capture_output=True,
             cwd=ROOT,
+            env=_CHILD_ENV,
             timeout=seconds + 5,  # + interpreter start-up; the parse itself is checked below
             check=True,
         )

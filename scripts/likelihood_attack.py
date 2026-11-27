@@ -392,12 +392,19 @@ def score_split(
     max_batch_tokens: int,
     max_new_tokens: int | None,
     log: Callable[[str], None],
+    score_fn: Callable | None = None,
+    quiet_secrets: bool = False,
 ) -> Scored:
-    """Score every candidate against each secret's replies (held-out or train, same code)."""
+    """Score every candidate against each secret's replies (held-out or train, same code).
+    `score_fn` (same signature as likelihood.score_candidates) replaces the model's scorer; only
+    the mock dry run (scripts/inadvertent.py) passes one."""
     # Looked up at call time (not imported by name) so tests can monkeypatch either function.
-    score_fn = (
-        likelihood.score_candidates if scorer.prompt_cache else likelihood.score_candidates_uncached
-    )
+    if score_fn is None:
+        score_fn = (
+            likelihood.score_candidates
+            if scorer.prompt_cache
+            else likelihood.score_candidates_uncached
+        )
     end_id = turn_end_id(tokenizer)
     stats: dict[str, int] = defaultdict(int)
     builders: dict[str, Callable[[str], list[int]]] = {}
@@ -468,12 +475,19 @@ def score_split(
             rows.append(scores)
             elapsed = time.perf_counter() - started
             eta = elapsed / i * (len(secrets) - i)
-            log(
-                f"  [{label} {i}/{len(secrets)}] secret {secret}: top guess "
-                f"{candidates[int(scores.argmax())]}, rank of secret "
-                f"{int((scores > scores[list(candidates).index(secret)]).sum()) + 1}; "
-                f"{elapsed:.0f}s elapsed, ETA {eta:.0f}s"
-            )
+            if quiet_secrets:  # neither the secret nor the guess
+                log(
+                    f"  [{label} {i}/{len(secrets)}] rank of the secret "
+                    f"{int((scores > scores[list(candidates).index(secret)]).sum()) + 1}; "
+                    f"{elapsed:.0f}s elapsed, ETA {eta:.0f}s"
+                )
+            else:
+                log(
+                    f"  [{label} {i}/{len(secrets)}] secret {secret}: top guess "
+                    f"{candidates[int(scores.argmax())]}, rank of secret "
+                    f"{int((scores > scores[list(candidates).index(secret)]).sum()) + 1}; "
+                    f"{elapsed:.0f}s elapsed, ETA {eta:.0f}s"
+                )
     return Scored(rows, tokenization, time.perf_counter() - started, max_chunk)
 
 
@@ -554,6 +568,9 @@ def likelihood_attack(
     seed: int = 0,
     log: Callable[[str], None] = flush_print,
     now: datetime | None = None,
+    extra_notes: Sequence[str] = (),
+    score_fn: Callable | None = None,
+    quiet_secrets: bool = False,
 ) -> tuple[LikelihoodAttack, Path]:
     """Score (or reuse `saved` scores), analyse, write a new likelihood_attack*.json.
 
@@ -567,7 +584,7 @@ def likelihood_attack(
     templates = (
         templates if templates is not None else load_system_templates(secret_type=secret_space.type)
     )
-    notes: list[str] = []
+    notes: list[str] = list(extra_notes)
     space = metrics.leakage.secret_space_size
     if words or secret_space.type == "digits4":  # the run's recorded words / codes, in order
         candidates = list(secret_space.secrets)
@@ -601,6 +618,8 @@ def likelihood_attack(
             "max_batch_tokens": max_batch_tokens,
             "max_new_tokens": max_new_tokens,
             "log": log,
+            "score_fn": score_fn,
+            "quiet_secrets": quiet_secrets,
         }
 
     if saved is not None:
@@ -879,6 +898,11 @@ def main(argv: list[str] | None = None) -> int:
         help="reuse the held-out scores of an earlier likelihood_attack*.json (no model needed "
         "unless --calibrate has to score the train secrets)",
     )
+    parser.add_argument(
+        "--no-secrets-in-log",
+        action="store_true",
+        help="per-secret progress without the secret or the top guess (cluster job logs)",
+    )
     parser.add_argument("--n-permutations", type=int, default=1000)
     parser.add_argument("--n-bootstrap", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=0)
@@ -898,8 +922,9 @@ def main(argv: list[str] | None = None) -> int:
                 )
         needs_model = saved is None or (args.calibrate and saved.calibration is None)
         model = tokenizer = scorer = batch_tokens = templates = None
+        load_notes: list[str] = []
         if needs_model:
-            model, tokenizer, scorer, batch_tokens, templates = _load_scorer(args, saved)
+            model, tokenizer, scorer, batch_tokens, templates, load_notes = _load_scorer(args, saved)
         result, path = likelihood_attack(
             args.run,
             model=model,
@@ -914,8 +939,10 @@ def main(argv: list[str] | None = None) -> int:
             n_permutations=args.n_permutations,
             n_bootstrap=args.n_bootstrap,
             seed=args.seed,
+            extra_notes=load_notes,
+            quiet_secrets=args.no_secrets_in_log,
         )
-    except (AttackError, GeneratorUnavailable, OSError, KeyError, ValueError) as e:
+    except (AttackError, GeneratorUnavailable, OSError, KeyError, ValueError, RuntimeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
     print(f"threat model: {THREAT_LABELS[threat_model_of(result.scorer)]}")
@@ -931,9 +958,10 @@ def main(argv: list[str] | None = None) -> int:
 def _load_scorer(args, saved: LikelihoodAttack | None):
     """Load the scorer model (the run's own unless --scorer-model; saved's when reusing)."""
     from fsa_runtime.generators.base import ModelSpec
-    from fsa_runtime.generators.hf import PLAIN_METHODS, HFGenerator
+    from fsa_runtime.generators.hf import PLAIN_METHODS, HFGenerator, load_record
     from fsa_runtime.registry import load_registry
     from fsa_runtime.settings import ROOT, load_settings
+    from fsa.training import peft_check
     from fsa.training.adapter import portable_path, resolve_path
 
     config = yaml.safe_load((args.run / CONFIG_FILE).read_text(encoding="utf-8"))
@@ -961,10 +989,17 @@ def _load_scorer(args, saved: LikelihoodAttack | None):
     scorer_method = method if same or method in PLAIN_METHODS else "base"
     # The run's own adapter: fsa/b3/random_layer runs record it in config.yaml
     # generation.adapter (older setups: the registry's adapters).
-    recorded = (config.get("generation") or {}).get("adapter")
+    gen_cfg = config.get("generation") or {}
+    recorded = gen_cfg.get("adapter")
     run_adapter = None
+    # Runs made with --adapter-key record the key and its pin: the adapter is found again through
+    # this machine's paths.local.yaml and must have the same sha256 (checked before loading).
+    adapter_key, adapter_pin = gen_cfg.get("adapter_key"), gen_cfg.get("adapter_sha256_pinned")
     if method not in PLAIN_METHODS:
-        if recorded:
+        if adapter_key:  # this machine's path for the key, else the recorded one
+            path, _ = peft_check.local_adapter(adapter_key, ROOT)
+            run_adapter = str(path) if path else (resolve_path(recorded, ROOT) if recorded else None)
+        elif recorded:
             run_adapter = resolve_path(recorded, ROOT)
         elif bm:
             run_adapter = bm.adapter_for(method)
@@ -987,11 +1022,16 @@ def _load_scorer(args, saved: LikelihoodAttack | None):
     # Prompts: ScorerInfo.method stays the run's method, so the candidate prompts use the same
     # system template as generation (fsa.prompting.system_prompt). The model is loaded as a
     # plain base model when no adapter is attached.
+    # The run's own model is scored at the revision generation recorded (config.yaml
+    # model.revision; older runs recorded none and load as before); a surrogate at its registry pin.
+    revision = run_model.get("revision") if same else (bm.revision if bm else None)
     spec = ModelSpec(
         method=scorer_method if adapter else "base",
         base_model=bm.id if bm else scorer_id,
         hf_id=hf_id,
         adapter=adapter,
+        revision=revision,
+        adapter_sha256=adapter_pin if adapter else None,
     )
     gen.check(spec)
     print(f"run:    {args.run.name} ({run_model.get('id')}, method {method})", flush=True)
@@ -1007,6 +1047,26 @@ def _load_scorer(args, saved: LikelihoodAttack | None):
     t0 = time.perf_counter()
     tokenizer, model = gen._load(spec)
     print(f"model loaded in {time.perf_counter() - t0:.0f}s", flush=True)
+    loaded = load_record(gen, spec) or {}
+    load_notes = [
+        (
+            f"scorer loaded revision {loaded.get('revision_loaded')} (pinned {revision}), "
+            f"dtype {loaded.get('dtype_loaded')}"
+        )
+    ]
+    if run_model.get("revision") and same and loaded.get("revision_loaded") not in (None, revision):
+        raise AttackError(f"scorer loaded {loaded.get('revision_loaded')}, the run used {revision}")
+    check = loaded.get("adapter_check")
+    if check:
+        c = check["counts"]
+        load_notes.append(
+            f"adapter sha256 {check['adapter_sha256'][:16]}... "
+            + (f"matches the pin {adapter_pin[:16]}..." if check["adapter_sha256_checked"] else "(no pin)")
+            + f"; LoRA tensors attached {c['tensors_attached']}/{c['tensors_in_file']}, missing "
+            f"{c['missing']}, unexpected {c['unexpected']}, remapped {check['remapped']}"
+        )
+    for n in load_notes:
+        print(n, flush=True)
     scorer = ScorerInfo(
         model=scorer_id,
         hf_id=hf_id,
@@ -1020,7 +1080,7 @@ def _load_scorer(args, saved: LikelihoodAttack | None):
         threat_model=threat,
     )
     batch_tokens = args.max_batch_tokens or _auto_max_batch_tokens(model, gen.device)
-    return model, tokenizer, scorer, batch_tokens, gen.templates
+    return model, tokenizer, scorer, batch_tokens, gen.templates, load_notes
 
 
 if __name__ == "__main__":

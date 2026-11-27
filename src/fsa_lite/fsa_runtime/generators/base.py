@@ -33,6 +33,10 @@ class ModelSpec:
     hf_id: str = ""  # e.g. "google/gemma-3-4b-it"
     k: int | None = None  # fsa only
     adapter: str | None = None  # LoRA adapter path (real backend only)
+    revision: str | None = None  # hub commit to load (registry base_models[].revision)
+    # Pin for the adapter's adapter_model.safetensors (sha256 or a >= 16-hex prefix): checked
+    # before the base model loads; None = not pinned (v1 adapters given by path).
+    adapter_sha256: str | None = None
 
     @property
     def id(self) -> str:

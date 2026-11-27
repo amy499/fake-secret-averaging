@@ -15,9 +15,32 @@
 # Public-weights attacker on an adapter run (base model only; writes its own numbered file):
 #   sbatch --export=ALL,RUN=outputs/runs/<run_id>,EXTRA_ARGS="--scorer-no-adapter --calibrate" \
 #       scripts/slurm/fsa_likelihood.sbatch
+# A paired inadvertent-leakage config (docs/inadvertent_leakage.md): its newest run, --calibrate,
+# THREAT = grey_box or public_weights, in the FSA-lite job environment (scripts/lib/common_lite.sh):
+#   INADV_CONFIG=inadv_gemma_rand20_fsa_lite_run3 THREAT=grey_box bash scripts/submit_slurm.sh scripts/slurm/fsa_likelihood.sbatch
+# The paired report (aggregates only), once all runs are scored (seconds):
+#   INADV_REPORT=gemma bash scripts/submit_slurm.sh scripts/slurm/fsa_likelihood.sbatch
+# (per-job walltimes for SBATCH_EXTRA: docs/inadvertent_leakage.md)
 
 set -euo pipefail
-: "${RUN:?set RUN=outputs/runs/<run_id> via sbatch --export=ALL,RUN=...}"
+
+if [ -n "${INADV_REPORT:-}" ] || [ -n "${INADV_CONFIG:-}" ]; then
+    CONFIG_LITE="${INADV_CONFIG:-report $INADV_REPORT}"   # shown by lite_banner
+    # shellcheck disable=SC1091
+    source "${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}/scripts/lib/common_lite.sh"
+    lite_banner
+    lite_fsa_venv
+fi
+if [ -n "${INADV_REPORT:-}" ]; then   # the paired tables (numpy only, seconds): qwen | gemma | all
+    uv run --group ml python -m scripts.inadvertent report --model "$INADV_REPORT"
+    exit $?
+fi
+if [ -n "${INADV_CONFIG:-}" ]; then
+    : "${THREAT:?set THREAT=grey_box or THREAT=public_weights with INADV_CONFIG}"
+    uv run --group ml python -m scripts.inadvertent score "$INADV_CONFIG" --threat "$THREAT" --backend real --device cuda
+    exit $?
+fi
+: "${RUN:?set RUN=outputs/runs/<run_id> via sbatch --export=ALL,RUN=... (or INADV_CONFIG + THREAT)}"
 
 echo "host: $(hostname)"
 echo "date: $(date)"

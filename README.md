@@ -144,7 +144,7 @@ repository yet. The output-filter baselines on PasswordEval (`output_filter_naiv
 | `configs/attack/` | attack-study configs (secret in context, sampled replies, attackers) |
 | `scripts/` | command-line tools; `slurm/`, `pbs/` job scripts; `submit_slurm.sh`, `submit_pbs.sh` |
 | `results/` | committed result tables (md / csv) and analysis plots |
-| `docs/` | [evaluation protocol](docs/eval_protocol.md), [harness guide](docs/eval_harness.md), [FSA-lite pipeline record](docs/fsa_lite_pipeline.md), [FSA v1 notes](docs/fsa/README.md) |
+| `docs/` | [evaluation protocol](docs/eval_protocol.md), [harness guide](docs/eval_harness.md), [FSA-lite pipeline record](docs/fsa_lite_pipeline.md), [FSA v1 notes](docs/fsa/README.md), [inadvertent leakage of run3 (v1 pipeline)](docs/inadvertent_leakage.md) |
 | `tests/`, `eval/tests/` | training-side and harness test suites |
 
 ## How to reproduce
