@@ -1,4 +1,5 @@
-"""Paired leakage statistics: the original model vs an adapter on the same secrets (report only).
+"""Paired leakage statistics: the original model vs an adapter (or one adapter vs another) on the
+same secrets (report only).
 
 Input: two likelihood-attack results (fsa.contract.schemas.LikelihoodAttack) on the same held-out
 secrets, one per variant. For every secret i and each variant, from the saved candidate scores:
@@ -213,12 +214,22 @@ def _strip_adapter_view(prompt_set):
     return {k: v for k, v in prompt_set.items() if k != "adapter_trained_prompts"}
 
 
-def check_run_pair(original_cfg: dict, adapter_cfg: dict) -> list[str]:
-    """Reasons the two runs are not a valid pair (empty list = paired). Never names a secret."""
+def check_run_pair(original_cfg: dict, adapter_cfg: dict, *, reference_has_adapter: bool = False) -> list[str]:
+    """Reasons the two runs are not a valid pair (empty list = paired). Never names a secret.
+    The reference (first) run is the original without an adapter, or, with
+    reference_has_adapter=True, another adapter run (e.g. run3 as the reference of run3 no-use):
+    then both must hold an adapter, and they must be different adapters."""
     problems = []
-    if (original_cfg.get("generation") or {}).get("adapter"):
+    ref_adapter = (original_cfg.get("generation") or {}).get("adapter")
+    tech_adapter = (adapter_cfg.get("generation") or {}).get("adapter")
+    if reference_has_adapter:
+        if not ref_adapter:
+            problems.append("the reference run has no adapter")
+        elif ref_adapter == tech_adapter:
+            problems.append("the two runs use the same adapter")
+    elif ref_adapter:
         problems.append("the original run has an adapter")
-    if not (adapter_cfg.get("generation") or {}).get("adapter"):
+    if not tech_adapter:
         problems.append("the adapter run has no adapter")
     for f in PAIRED_FIELDS:
         a, b = _get(original_cfg, f), _get(adapter_cfg, f)

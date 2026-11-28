@@ -13,12 +13,12 @@ fsa/b3/random_layer need a LoRA adapter (configs/training/models.yaml: base_mode
 
 from __future__ import annotations
 
+import re
 import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 
-from fsa_runtime.generators.base import GeneratedReply, GeneratorUnavailable, ModelSpec
 from fsa.prompting import (  # noqa: F401  (re-exported for existing imports)
     PROMPT_ONLY_TEMPLATES,
     PROMPTS_YAML,
@@ -30,6 +30,8 @@ from fsa.prompting import (  # noqa: F401  (re-exported for existing imports)
     system_prompt,
     until_eos,
 )
+
+from fsa_runtime.generators.base import GeneratedReply, GeneratorUnavailable, ModelSpec
 
 PLAIN_METHODS = frozenset({"base", *PROMPT_ONLY_TEMPLATES})  # template key == method name
 INSTALL_HINT = "the real backend needs torch + transformers: run `uv sync --group ml`"
@@ -49,6 +51,55 @@ def load_record(gen: Any, spec: ModelSpec) -> dict[str, Any] | None:
     """What `gen` loaded for `spec` (revision, dtype, adapter check), or None (mock / not loaded)."""
     adapter = spec.adapter if spec.method not in PLAIN_METHODS else None
     return (getattr(gen, "loaded_info", None) or {}).get((spec.hf_id, adapter, spec.revision))
+
+
+# <cache>/models--<org>--<name>/snapshots/<commit>/...: the layout of the Hugging Face hub cache.
+_SNAPSHOT_RE = re.compile(r"models--(?P<org>[^/\\]+?)--(?P<name>[^/\\]+)[/\\]snapshots[/\\](?P<commit>[0-9a-f]{40})(?:[/\\]|$)")
+
+
+def commit_from_snapshot_path(path: str | Path | None, hf_id: str | None = None) -> str | None:
+    """The commit of a hub-cache snapshot path (models--<org>--<name>/snapshots/<commit>/...),
+    or None if `path` is not one. With `hf_id`, the path must belong to that repository."""
+    if not path:
+        return None
+    m = _SNAPSHOT_RE.search(str(path))
+    if m is None:
+        return None
+    if hf_id is not None and f"{m['org']}/{m['name']}" != hf_id:
+        return None
+    return m["commit"]
+
+
+def resolve_revision_loaded(
+    model: Any, hf_id: str, revision: str | None, *, cache_dir: str | Path | None = None
+) -> tuple[str | None, str | None]:
+    """(commit actually loaded, where it was read). transformers reports it as
+    config._commit_hash; loaded offline from the hub cache it can be None (NSCC runs), and then it
+    is read from the snapshot folder the files came from: config._name_or_path if that is a
+    snapshot path, else the cache entry of config.json for `revision` (the same lookup
+    from_pretrained made, with the same cache_dir). (None, None) if neither gives a commit."""
+    cfg = getattr(model, "config", None)
+    commit = getattr(cfg, "_commit_hash", None)
+    if commit:
+        return str(commit), "config._commit_hash"
+    commit = commit_from_snapshot_path(getattr(cfg, "_name_or_path", None), hf_id)
+    if commit:
+        return commit, "config._name_or_path snapshot"
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        hit = try_to_load_from_cache(hf_id, "config.json", cache_dir=cache_dir, revision=revision)
+    except (ImportError, OSError, ValueError):  # no hub library, or not a hub repo id (a local path): unresolved
+        hit = None
+    commit = commit_from_snapshot_path(hit if isinstance(hit, str | Path) else None, hf_id)
+    return (commit, "hf cache snapshot") if commit else (None, None)
+
+
+def check_revision(hf_id: str, requested: str | None, loaded: str | None, source: str | None) -> None:
+    """Refuse a load whose resolved commit differs from the pinned one (None = unresolved: kept,
+    recorded as null)."""
+    if requested and loaded is not None and loaded != requested:
+        raise GeneratorUnavailable(f"{hf_id}: loaded revision {loaded} ({source}), pinned {requested}")
 
 
 def resolve_dtype(dtype: str, device: str) -> str:
@@ -175,16 +226,17 @@ class HFGenerator:
             dtype_loaded = str(next(model.parameters()).dtype).replace("torch.", "")
         except (AttributeError, StopIteration, TypeError):  # stand-in models in tests
             dtype_loaded = None
+        revision_loaded, revision_source = resolve_revision_loaded(
+            model, spec.hf_id, spec.revision, cache_dir=self._cache_dir
+        )
         info: dict[str, Any] = {
             "revision_requested": spec.revision,
-            "revision_loaded": getattr(getattr(model, "config", None), "_commit_hash", None),
+            "revision_loaded": revision_loaded,
+            "revision_source": revision_source,
             "dtype_loaded": dtype_loaded,
             "model_class": type(model).__name__,
         }
-        if spec.revision and info["revision_loaded"] not in (None, spec.revision):
-            raise GeneratorUnavailable(
-                f"{spec.hf_id}: loaded revision {info['revision_loaded']}, pinned {spec.revision}"
-            )
+        check_revision(spec.hf_id, spec.revision, revision_loaded, revision_source)
         if adapter:
             # The harness bridge's checks (fsa.training.peft_check): layout, shapes, target_modules,
             # tensor counts, training_info.json, key remap if the prefix differs, and after loading:

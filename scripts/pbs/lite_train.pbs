@@ -32,7 +32,7 @@ lite_pbs_heldout_check || { echo "held-out check FAILED: nothing trained"; exit 
 rc=$?
 if [ $rc = 3 ]; then
     echo "NOT FINISHED (see the line above for what remains): resubmit the same line:"
-    echo "  qsub -v RUN_DIR=$RUN_DIR,CONFIG_LITE=$CONFIG_LITE,ADAPTER_OUT=$ADAPTER_OUT,MAX_MINUTES=${MAX_MINUTES:-50} -o $SCR/fsa_main_logs/$(basename "$RUN_DIR")_$(date +%m%d_%H%M).log $V2/lite_train.pbs"
+    echo "  QSUB_EXTRA=\"-l walltime=01:00:00 -v RUN_DIR=$RUN_DIR,CONFIG_LITE=$CONFIG_LITE,ADAPTER_OUT=$ADAPTER_OUT,MAX_MINUTES=${MAX_MINUTES:-50}\" bash scripts/submit_pbs.sh scripts/pbs/lite_train.pbs"
     exit 3
 fi
 [ $rc = 0 ] || exit $rc
@@ -63,4 +63,4 @@ else
 fi
 echo "ADAPTER: $ADAPTER_OUT"
 echo "adapter_model.safetensors sha256: $sha"
-echo "-> the harness spec (fsa_lite.approach.yaml for run2, fsa_lite_run3.approach.yaml for run3) models.qwen.defence.adapter_sha256: \"$sha\""
+echo "-> the harness spec (fsa_lite.approach.yaml for run2, fsa_lite_run3.approach.yaml for run3, fsa_lite_run3_nouse.approach.yaml for run3 without the USE term) models.qwen.defence.adapter_sha256: \"$sha\""

@@ -110,7 +110,9 @@ does not show this. The cause is not established. Report-only diagnostics of the
 and a post-hoc ablation without the use term (`configs/training/experiments/fsa_lite_gemma12b_run3_nouse.yaml`,
 `configs/eval/fsa_lite_run3_nouse.approach.yaml`, Gemma adapter pinned: step 500, sha256 prefix
 `63a6d346`, chosen by the same pre-registered rule) are set up; no result from them is in this
-repository yet. The output-filter baselines on PasswordEval (`output_filter_naive`, and
+repository yet. The same ablation on Qwen2.5-7B-Instruct is a **pre-registered** test of the Gemma
+finding ([docs/prereg_qwen_nouse.md](docs/prereg_qwen_nouse.md), registered 2026-11-28, before
+training). The output-filter baselines on PasswordEval (`output_filter_naive`, and
 `output_filter_rule`, an oracle upper bound) are set up the same way; see
 [docs/cluster_setup.md](docs/cluster_setup.md).
 

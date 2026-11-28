@@ -1,18 +1,23 @@
-"""Inadvertent leakage of the FSA-lite run3 adapters, measured with the FSA v1 pipeline: the
-original model vs the adapter on identical prompts, secrets, seeds and decoding.
+"""Inadvertent leakage of the FSA-lite run3 adapters (run3, and run3 without the USE term),
+measured with the FSA v1 pipeline: the original model vs each adapter on identical prompts,
+secrets, seeds and decoding.
 
 One config per (model, variant, prompt set) in configs/inadvertent/ (docs/inadvertent_leakage.md).
-The two variants of a pair are identical except name, variant and adapter; `check` refuses
-otherwise. Subcommands (run from the repository root):
+The variants of a (model, prompt set) group are the original and every technique of TECHNIQUES;
+they are identical except name, variant and adapter, and a technique's adapter spec is its own
+approach spec (configs/eval/<variant>.approach.yaml); `check` refuses otherwise. Subcommands (run
+from the repository root):
 
-    check                              every config: pairing, adapter key / pin (no torch, no GPU)
+    check                              every config: pairing, adapter key / pin (no torch, no GPU);
+                                       a FILL_ME pin is listed (generate refuses that config)
     generate CONFIG --backend B        scripts.baseline_leakage with the config's settings
     score CONFIG --threat T --backend B
                                        scripts.likelihood_attack --calibrate on the config's newest
                                        run; T = grey_box (base + the run's adapter) or
                                        public_weights (base only, adapter run only)
     report --model qwen|gemma|all      paired statistics (fsa.eval.paired_leakage), one md + csv
-                                       table per model; aggregates only
+                                       table per model: original, run3, run3 no-use and the
+                                       contrasts of CONTRASTS; aggregates only
     estimate                           the GPU-time estimates of docs/inadvertent_leakage.md
 
 --backend mock: synthetic replies (fsa_runtime.generators.mock), runs in mock_data/runs named
@@ -44,7 +49,11 @@ from scripts._cli import utf8_stdio
 
 CONFIG_DIR = ROOT / "configs" / "inadvertent"
 PAIR_FREE_KEYS = ("name", "variant", "adapter")  # the only keys that may differ within a pair
-VARIANTS = ("original", "fsa_lite_run3")
+TECHNIQUES = ("fsa_lite_run3", "fsa_lite_run3_nouse")  # each = the name of the approach spec pinning it
+VARIANTS = ("original", *TECHNIQUES)
+# (technique, reference) contrasts of the report, each a paired bootstrap on the same held-out secrets
+CONTRASTS = (("fsa_lite_run3", "original"), ("fsa_lite_run3_nouse", "original"), ("fsa_lite_run3_nouse", "fsa_lite_run3"))
+LABELS = {"original": "original", "fsa_lite_run3": "run3", "fsa_lite_run3_nouse": "run3 no-use"}
 MODELS = {"qwen": "qwen2.5-7b-instruct", "gemma": "gemma3-12b-it"}
 MACHINES = {"qwen": "NSCC (PBS, A100-40GB)", "gemma": "TC2 (Slurm, A40)"}
 PROMPTS = ("rand20", "lottery", "unpredictabench")  # primary first
@@ -74,11 +83,19 @@ def load_config(path: Path) -> dict[str, Any]:
         raise ConfigError(f"{cfg['name']}: the original variant has no adapter, the other one has one")
     if cfg["adapter"] is not None and set(cfg["adapter"]) != {"key", "spec"}:
         raise ConfigError(f"{cfg['name']}: adapter must be {{key: <paths.local.yaml key>, spec: <approach spec>}}")
+    if cfg["adapter"] is not None and cfg["adapter"]["spec"] != spec_of(cfg["variant"]):
+        raise ConfigError(f"{cfg['name']}: variant {cfg['variant']} is pinned by {spec_of(cfg['variant'])}, "
+                          f"not {cfg['adapter']['spec']}")  # fmt: skip
     if len(cfg["prompt"]) != 1 or next(iter(cfg["prompt"])) not in ("id", "set"):
         raise ConfigError(f"{cfg['name']}: prompt must be {{id: <prompt id>}} or {{set: <prompt set>}}")
     if cfg["secrets"].get("type") != "digits":
         raise ConfigError(f"{cfg['name']}: only 2-digit secrets (type digits)")
     return cfg
+
+
+def spec_of(variant: str) -> str:
+    """The approach spec (repository-relative) that pins a technique variant's adapter."""
+    return f"configs/eval/{variant}.approach.yaml"
 
 
 def all_configs(config_dir: Path = CONFIG_DIR) -> dict[str, dict[str, Any]]:
@@ -99,18 +116,20 @@ def pair_name(cfg: dict[str, Any]) -> str:
 
 
 def pairs(configs: dict[str, dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
-    """{pair name: {variant: config}}; ConfigError unless every pair is complete and identical
-    except PAIR_FREE_KEYS."""
+    """{group name: {variant: config}}; ConfigError unless every group holds every variant of
+    VARIANTS and each technique is identical to the original except PAIR_FREE_KEYS."""
     out: dict[str, dict[str, dict[str, Any]]] = {}
     for cfg in configs.values():
         out.setdefault(pair_name(cfg), {})[cfg["variant"]] = cfg
     for name, p in out.items():
         if set(p) != set(VARIANTS):
             raise ConfigError(f"pair {name}: has {sorted(p)}, needs {list(VARIANTS)}")
-        a, b = shared(p["original"]), shared(p["fsa_lite_run3"])
-        if a != b:
-            diff = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
-            raise ConfigError(f"pair {name}: the variants differ in {diff} (only {list(PAIR_FREE_KEYS)} may)")
+        a = shared(p["original"])
+        for tech in TECHNIQUES:
+            b = shared(p[tech])
+            if a != b:
+                diff = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
+                raise ConfigError(f"pair {name}: original and {tech} differ in {diff} (only {list(PAIR_FREE_KEYS)} may)")
     return out
 
 
@@ -247,6 +266,17 @@ def score_mock(cfg: dict[str, Any], run: Path, threat: str) -> Path:
 # --------------------------------------------------------------------------- report
 
 
+def standing(cfg: dict[str, Any]) -> str | None:
+    """A technique's standing for this model, from its approach spec (models.<key>.post_hoc /
+    pre_registered): "post hoc", "pre-registered (<doc>)", or None if the spec says neither."""
+    spec = yaml.safe_load((ROOT / cfg["adapter"]["spec"]).read_text(encoding="utf-8")) or {}
+    key = next((k for k, v in MODELS.items() if v == cfg["model"]), None)
+    m = (spec.get("models") or {}).get(key) or {}
+    if m.get("pre_registered"):
+        return f"pre-registered ({m['pre_registered']})"
+    return "post hoc" if m.get("post_hoc") else None
+
+
 def pick_attack(run: Path, threat: str):
     """The file a table shows for one threat model: a usable calibration first, then the newest
     (docs/fsa/likelihood_attack.md display rule). Files of the other threat model never compete,
@@ -276,83 +306,99 @@ METRIC_LABELS = {
     "exact": "exact (%)",
     "top5": "top-5 (%)",
 }
+# One row per (prompt, threat model, metric, contrast): technique − reference, paired over secrets.
 CSV_COLUMNS = [
-    "model", "prompt", "threat_model", "metric", "status", "n_secrets", "replies_per_secret",
-    "original", "original_low", "original_high", "adapter", "adapter_low", "adapter_high",
-    "difference", "difference_low", "difference_high", "tau_original", "tau_adapter",
-    "degenerate_original", "degenerate_adapter", "original_file", "adapter_file",
-    "heldout_in_used_secrets", "train_in_used_secrets", "n_bootstrap", "seed", "is_mock",
+    "model", "prompt", "threat_model", "metric", "technique", "reference", "status", "n_secrets",
+    "replies_per_secret", "reference_value", "reference_low", "reference_high", "technique_value",
+    "technique_low", "technique_high", "difference", "difference_low", "difference_high",
+    "tau_reference", "tau_technique", "degenerate_reference", "degenerate_technique",
+    "reference_file", "technique_file", "heldout_in_used_secrets", "train_in_used_secrets",
+    "n_bootstrap", "seed", "is_mock",
 ]  # fmt: skip
+
+
+def _contrast(tech: str, ref: str, runs: dict, cfgs: dict, threat: str, *, n_bootstrap: int, seed: int):
+    """(status, PairedResult | None, reference file, technique file) of one contrast. The
+    original has no adapter, so its grey_box file IS the public-weights scorer and stands as the
+    reference under both threat models; a technique reference is read under the same threat model."""
+    from fsa.eval.paired_leakage import PairingError, check_run_pair, paired
+
+    missing = [v for v in (ref, tech) if runs[v] is None]
+    if missing:
+        return f"no finished run: {', '.join(missing)}", None, None, None
+    problems = check_run_pair(cfgs[ref], cfgs[tech], reference_has_adapter=ref != "original")
+    if problems:
+        return "not paired: " + "; ".join(problems), None, None, None
+    ref_threat = "grey_box" if ref == "original" else threat
+    a, fa = pick_attack(runs[ref], ref_threat)
+    b, fb = pick_attack(runs[tech], threat)
+    if a is None or b is None:
+        lack = [x for x, f in ((f"{ref} {ref_threat}", a), (f"{tech} {threat}", b)) if f is None]
+        return "no attack file: " + ", ".join(lack), None, fa, fb
+    try:
+        return "ok", paired(a, b, n_resamples=n_bootstrap, seed=seed), fa, fb
+    except PairingError as e:
+        return f"not paired: {e}", None, fa, fb
+
+
+def _used_overlap(cfgs: dict) -> tuple[Any, Any]:
+    """(held-out, train) counts in the used-secrets file, from the first technique run that
+    recorded them (every technique counts against the same file); (None, None) if none did."""
+    for tech in TECHNIQUES:
+        ov = ((cfgs[tech] or {}).get("eval") or {}).get("used_secrets_overlap") or {}
+        if ov.get("available"):
+            return (ov.get("heldout") or {}).get("n_in_used"), (ov.get("train") or {}).get("n_in_used")
+    return None, None
 
 
 def report_model(model: str, *, backend: str, base: Path, out_dir: Path, n_bootstrap: int, seed: int,
                  configs: dict[str, dict[str, Any]] | None = None) -> tuple[Path, Path]:  # fmt: skip
-    from fsa.eval.paired_leakage import PairingError, check_run_pair, paired
-
     configs = configs if configs is not None else all_configs()
     ps = pairs(configs)
     rows: list[dict[str, Any]] = []
     md_rows: list[str] = []
     notes: list[str] = []
+    overlap: dict[str, tuple[Any, Any]] = {}
+    standings: dict[str, str | None] = {}
     for prompt in PROMPTS:
         name = f"inadv_{model}_{prompt}"
         if name not in ps:
             continue
         cfg = ps[name]
-        r_orig, r_ad = find_run(base, cfg["original"]["name"]), find_run(base, cfg["fsa_lite_run3"]["name"])
+        for tech in TECHNIQUES:
+            standings.setdefault(tech, standing(cfg[tech]))
+        runs = {v: find_run(base, cfg[v]["name"]) for v in VARIANTS}
+        cfgs = {v: yaml.safe_load((r / CONFIG_FILE).read_text(encoding="utf-8")) if r else None for v, r in runs.items()}
+        held, train = overlap[prompt] = _used_overlap(cfgs)
         base_row = {"model": cfg["original"]["model"], "prompt": prompt, "n_bootstrap": n_bootstrap, "seed": seed,
-                    "replies_per_secret": cfg["original"]["replies"], "is_mock": backend == "mock"}  # fmt: skip
-        status, c_orig, c_ad = "ok", None, None
-        if r_orig is None or r_ad is None:
-            missing = [v for v, r in (("original", r_orig), ("fsa_lite_run3", r_ad)) if r is None]
-            status = f"no finished run: {', '.join(missing)}"
-        else:
-            c_orig = yaml.safe_load((r_orig / CONFIG_FILE).read_text(encoding="utf-8"))
-            c_ad = yaml.safe_load((r_ad / CONFIG_FILE).read_text(encoding="utf-8"))
-            problems = check_run_pair(c_orig, c_ad)
-            if problems:
-                status = "not paired: " + "; ".join(problems)
-        ov = ((c_ad or {}).get("eval") or {}).get("used_secrets_overlap") or {}
-        base_row["heldout_in_used_secrets"] = (ov.get("heldout") or {}).get("n_in_used") if ov.get("available") else None
-        base_row["train_in_used_secrets"] = (ov.get("train") or {}).get("n_in_used") if ov.get("available") else None
+                    "replies_per_secret": cfg["original"]["replies"], "is_mock": backend == "mock",
+                    "heldout_in_used_secrets": held, "train_in_used_secrets": train}  # fmt: skip
         for threat in THREATS:
-            row_status, res, fa, fb = status, None, None, None
-            if status == "ok":
-                # the original has no adapter: its grey_box scorer IS the public-weights model
-                a, fa = pick_attack(r_orig, "grey_box")
-                b, fb = pick_attack(r_ad, threat)
-                if a is None or b is None:
-                    row_status = "no attack file: " + ", ".join(
-                        x for x, f in (("original grey_box", a), (f"fsa_lite_run3 {threat}", b)) if f is None
-                    )
-                else:
-                    try:
-                        res = paired(a, b, n_resamples=n_bootstrap, seed=seed)
-                        notes += [f"{prompt} / {threat}: {n}" for n in res.notes]
-                    except PairingError as e:
-                        row_status = f"not paired: {e}"
-            for m in ("bits_calibrated", "bits_raw", "exact", "top5"):
-                row = dict.fromkeys(CSV_COLUMNS)
-                row.update(base_row, threat_model=threat, metric=m, status=row_status, original_file=fa, adapter_file=fb)
-                if res is not None:
-                    row["n_secrets"] = res.n_secrets
-                    for side in ("original", "adapter", "difference"):
-                        e = getattr(res, side)[m]
-                        if e is not None:
-                            row[side], row[f"{side}_low"], row[f"{side}_high"] = e.value, e.low, e.high
-                    row["tau_original"], row["tau_adapter"] = res.tau["original"], res.tau["adapter"]
-                    row["degenerate_original"] = res.degenerate["original"]
-                    row["degenerate_adapter"] = res.degenerate["adapter"]
-                rows.append(row)
-                if res is not None:
-                    pct = m in ("exact", "top5")
-                    deg = m == "bits_calibrated" and (res.degenerate["original"] or res.degenerate["adapter"])
-                    md_rows.append(
-                        f"| {prompt} | {threat} | {METRIC_LABELS[m]}{' †' if deg else ''} | {res.n_secrets} | "
-                        f"{_fmt(res.original[m], pct)} | {_fmt(res.adapter[m], pct)} | {_fmt(res.difference[m], pct, True)} |"
-                    )
-            if res is None:
-                md_rows.append(f"| {prompt} | {threat} | — | — | — | — | {row_status} |")
+            res = {}
+            for tech, ref in CONTRASTS:
+                st, r, fa, fb = _contrast(tech, ref, runs, cfgs, threat, n_bootstrap=n_bootstrap, seed=seed)
+                res[(tech, ref)] = (st, r)
+                if r is not None:
+                    notes += [f"{prompt} / {threat} / {LABELS[tech]} vs {LABELS[ref]}: {n}" for n in r.notes]
+                for m in METRIC_LABELS:
+                    row = dict.fromkeys(CSV_COLUMNS)
+                    row.update(base_row, threat_model=threat, metric=m, technique=tech, reference=ref, status=st,
+                               reference_file=fa, technique_file=fb)  # fmt: skip
+                    if r is not None:
+                        row["n_secrets"] = r.n_secrets
+                        for side, col in (("original", "reference"), ("adapter", "technique"), ("difference", None)):
+                            e = getattr(r, side)[m]
+                            if e is None:
+                                continue
+                            if col is None:
+                                row["difference"], row["difference_low"], row["difference_high"] = e.value, e.low, e.high
+                            else:
+                                row[f"{col}_value"], row[f"{col}_low"], row[f"{col}_high"] = e.value, e.low, e.high
+                        row["tau_reference"], row["tau_technique"] = r.tau["original"], r.tau["adapter"]
+                        row["degenerate_reference"] = r.degenerate["original"]
+                        row["degenerate_technique"] = r.degenerate["adapter"]
+                    rows.append(row)
+            md_rows += _md_rows(prompt, threat, res)
     out = Path(out_dir) / model
     out.mkdir(parents=True, exist_ok=True)
     csv_path, md_path = out / "inadvertent_leakage.csv", out / "inadvertent_leakage.md"
@@ -360,37 +406,41 @@ def report_model(model: str, *, backend: str, base: Path, out_dir: Path, n_boots
         w = csv.DictWriter(f, fieldnames=CSV_COLUMNS, lineterminator="\n")
         w.writeheader()
         w.writerows(rows)
-    overlap = sorted({(r["prompt"], r["heldout_in_used_secrets"], r["train_in_used_secrets"]) for r in rows})
     overlap_text = "; ".join(
         f"{p}: {h}/50 held-out, {t}/50 train" if h is not None else f"{p}: not counted (file absent at generation)"
-        for p, h, t in overlap
+        for p, (h, t) in overlap.items()
     )
+    contrast_heads = " | ".join(f"{LABELS[a]} − {LABELS[b]} [95% CI]" for a, b in CONTRASTS)
+    value_heads = " | ".join(f"{LABELS[v]} [95% CI]" for v in VARIANTS)
+    stand = "; ".join(f"{LABELS[t]}: {s}" for t, s in standings.items() if s)
     lines = [
-        f"# Inadvertent leakage: {MODELS[model]}, original vs FSA-lite run3" + (" (MOCK: synthetic)" if backend == "mock" else ""),
+        f"# Inadvertent leakage: {MODELS[model]}, original vs FSA-lite run3 vs run3 no-use"
+        + (" (MOCK: synthetic)" if backend == "mock" else ""),
         "",
         (
             f"Generated {datetime.now().isoformat(timespec='seconds')} by scripts/inadvertent.py report from "
             f"`{base.name}`; machine {MACHINES[model]}. Likelihood attacker (100 candidate codes), held-out "
-            f"secrets, 95% percentile bootstrap over secrets ({n_bootstrap} draws, seed {seed}); the difference "
-            "is FSA-lite run3 − original with the same resampled secrets (paired)."
+            f"secrets, 95% percentile bootstrap over secrets ({n_bootstrap} draws, seed {seed}); every "
+            "difference is a paired bootstrap of its two variants on the same resampled secrets."
         ),
         "",
-        "| prompt | threat model | metric | n | original [95% CI] | FSA-lite run3 [95% CI] | run3 − original [95% CI] |",
-        "|---|---|---|---|---|---|---|",
+        f"| prompt | threat model | metric | n | {value_heads} | {contrast_heads} |",
+        "|---|---|---|---|" + "---|" * (len(VARIANTS) + len(CONTRASTS)),
         *md_rows,
         "",
         (
-            "- **grey_box**: the adapter run scored by base + adapter; **public_weights**: the adapter run's "
-            "replies scored by the base model only. The original is always its own (base-model) grey_box "
+            "- **grey_box**: an adapter run scored by base + its own adapter; **public_weights**: the adapter "
+            "run's replies scored by the base model only. The original is always its own (base-model) grey_box "
             "file, which is also the public-weights model."
         ),
         (
             "- **≥ bits** = max(0, log2 100 − mean cross-entropy of the true code), the lower bound every "
             "likelihood_attack file reports. *calibrated*: softmax(scores / τ), τ fitted on the attacker-train "
-            "secrets of the same run; *raw*: softmax(scores). † τ at its search bound: the calibrated value is "
-            "degenerate, read the raw row."
+            "secrets of the same run; *raw*: softmax(scores). † τ at its search bound in a variant of that "
+            "row: the calibrated value is degenerate, read the raw row."
         ),
         "- exact / top-5: tie-aware, from the calibrated posterior when usable, else the raw one.",
+        *([f"- standing on {MODELS[model]}: {stand}."] if stand else []),
         "- used-secrets overlap (held-out / train secrets that occur in run3's training values, exact "
         "line match; counts only; a 100-value space, so overlap is expected and does not invalidate "
         "the test): " + overlap_text + ".",
@@ -399,6 +449,31 @@ def report_model(model: str, *, backend: str, base: Path, out_dir: Path, n_boots
     ]
     md_path.write_text("\n".join(lines), encoding="utf-8", newline="\n")
     return md_path, csv_path
+
+
+def _md_rows(prompt: str, threat: str, res: dict) -> list[str]:
+    """Markdown rows of one (prompt, threat): each variant's value comes from its contrast with
+    the original (with the same seed and secret order, the original's estimate is the same in
+    every contrast), then one column per contrast; a missing contrast shows its status."""
+    ok = {k: r for k, (_, r) in res.items() if r is not None}
+    if not ok:
+        st = "; ".join(f"{LABELS[a]} vs {LABELS[b]}: {s}" for (a, b), (s, _) in res.items())
+        return [f"| {prompt} | {threat} | — | — |" + " — |" * (len(VARIANTS) + len(CONTRASTS) - 1) + f" {st} |"]
+    out = []
+    for m, label in METRIC_LABELS.items():
+        pct = m in ("exact", "top5")
+        value = {"original": next((r.original[m] for (_, b), r in ok.items() if b == "original"), None)}
+        for tech in TECHNIQUES:
+            r = ok.get((tech, "original"))
+            value[tech] = r.adapter[m] if r is not None else None
+        deg = m == "bits_calibrated" and any(r.degenerate["original"] or r.degenerate["adapter"] for r in ok.values())
+        n = next(iter(ok.values())).n_secrets
+        cells = [_fmt(value[v], pct) for v in VARIANTS]
+        for key in CONTRASTS:
+            st, r = res[key]
+            cells.append(_fmt(r.difference[m], pct, True) if r is not None else f"— ({st})")
+        out.append(f"| {prompt} | {threat} | {label}{' †' if deg else ''} | {n} | " + " | ".join(cells) + " |")
+    return out
 
 
 # --------------------------------------------------------------------------- estimates
@@ -474,7 +549,7 @@ def main(argv: list[str] | None = None) -> int:
             cfg = _config(a.config)
             if a.threat == "public_weights" and cfg["adapter"] is None:
                 raise ConfigError(f"{cfg['name']} has no adapter: its grey_box scorer already is the base "
-                                  "(public-weights) model; score public_weights on the fsa_lite_run3 config")  # fmt: skip
+                                  "(public-weights) model; score public_weights on a technique config")  # fmt: skip
             run = find_run(runs_dir(a.backend), cfg["name"])
             if run is None:
                 raise ConfigError(f"no finished {a.backend} run of {cfg['name']} in {runs_dir(a.backend)}")
@@ -509,20 +584,35 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _check() -> int:
+    """Pairing of every group and each technique's pin. A FILL_ME pin (an adapter not trained or
+    not pinned yet) is listed, not an error: `generate` refuses that config until it is pinned. Any
+    other pin problem (a key no model uses, a malformed sha256) fails the check."""
     from fsa.training import peft_check
 
     configs = all_configs()
     ps = pairs(configs)
+    unpinned = []
     for name, p in sorted(ps.items()):
-        ad = p["fsa_lite_run3"]["adapter"]
-        pin = peft_check.pin_for_local_key(ROOT / ad["spec"], ad["key"])
-        path, source = peft_check.local_adapter(ad["key"], ROOT)
         used = (ROOT / p["original"]["used_secrets"]).is_file()
-        print(f"{name}: pair ok (differs only in {list(PAIR_FREE_KEYS)}); adapter {ad['key']} pinned "
-              f"{pin['adapter_sha256'][:16]}... ({pin['spec']} models.{pin['model']}); "
-              f"here: {'found' if path and path.exists() else 'not on this machine'} ({source}); "
-              f"used-secrets file {'present' if used else 'absent'}")  # fmt: skip
-    print(f"{len(configs)} configs, {len(ps)} pairs")
+        print(f"{name}: {len(VARIANTS)} variants ok (each technique differs from the original only in "
+              f"{list(PAIR_FREE_KEYS)}); used-secrets file {'present' if used else 'absent'}")  # fmt: skip
+        for tech in TECHNIQUES:
+            ad = p[tech]["adapter"]
+            path, source = peft_check.local_adapter(ad["key"], ROOT)
+            here = f"here: {'found' if path and path.exists() else 'not on this machine'} ({source})"
+            try:
+                pin = peft_check.pin_for_local_key(ROOT / ad["spec"], ad["key"])
+            except peft_check.AdapterError as e:
+                if peft_check.PLACEHOLDER not in str(e):
+                    raise ConfigError(f"{p[tech]['name']}: {e}") from None
+                unpinned.append(p[tech]["name"])
+                print(f"  {tech}: adapter {ad['key']} NOT PINNED ({ad['spec']}: {peft_check.PLACEHOLDER}); "
+                      f"generate refuses it; {here}")  # fmt: skip
+                continue
+            print(f"  {tech}: adapter {ad['key']} pinned {pin['adapter_sha256'][:16]}... "
+                  f"({pin['spec']} models.{pin['model']}); {here}")  # fmt: skip
+    print(f"{len(configs)} configs, {len(ps)} groups; not pinned yet: {len(unpinned)}"
+          + (f" ({', '.join(unpinned)})" if unpinned else ""))  # fmt: skip
     return 0
 
 

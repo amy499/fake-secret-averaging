@@ -1,16 +1,19 @@
-# POST-HOC ABLATION (decided after the run3 PasswordEval results; not a pre-registered approach):
-# FSA-lite run3 WITHOUT the USE term, Gemma only. Same training as fsa_lite_run3 (data built_run3 with
-# its hashes, mix, steps, seeds, need-KL x2, the same pre-registered dev selection rule) except
-# use.weight 0 (configs/training/experiments/fsa_lite_gemma12b_run3_nouse.yaml; the run reuses
-# run3's cached base replies, content-checked by reuse_replies.py). Question: does the USE term cause
-# run3's higher Gemma PasswordEval info leak? Report it as an ablation next to run3, never as a
-# technique row of its own. Same bridge (experiments/_bridges/fsa.py), its own approach name, so its
-# runs go to outputs/protocol/fsa_lite_run3_nouse/... and never touch fsa's, fsa_lite's or run3's.
+# FSA-lite run3 WITHOUT the USE term. Same training as fsa_lite_run3 (data built_run3 with its hashes,
+# mix, steps, seeds, need-KL x2, the same pre-registered dev selection rule) except use.weight 0
+# (configs/training/experiments/fsa_lite_<model>_run3_nouse.yaml; each run reuses its model's run3
+# cached base replies). Report it as an ablation next to run3, never as a technique row of its own.
+# The two models differ in standing (models.<key>.post_hoc):
+#   gemma  POST-HOC ABLATION, decided after the run3 PasswordEval results (not pre-registered).
+#          Question: does the USE term cause run3's higher Gemma PasswordEval info leak?
+#   qwen   PRE-REGISTERED test of the Gemma finding (models.qwen.pre_registered, written 2026-11-28
+#          before the Qwen run was trained): hypothesis, endpoints, margins and decision rule there.
+# Same bridge (experiments/_bridges/fsa.py), its own approach name, so its runs go to
+# outputs/protocol/fsa_lite_run3_nouse/... and never touch fsa's, fsa_lite's or run3's.
 #   python run.py --approach fsa_lite_run3_nouse --model gemma --suite core --variant technique --benchmarks password_eval_team
+#   python run.py --approach fsa_lite_run3_nouse --model qwen --suite core --variant technique   (once pinned)
 #   adapter check first, then the run: the job commands are in docs/cluster_setup.md (item 1).
 name: fsa_lite_run3_nouse
 owner: amruta
-post_hoc: true
 # The original variant is approach fsa's (identical model options, checked by core/protocol.py), so
 # stats.team_table pairs these technique runs with the EXISTING fsa original runs, as for run3.
 original_from: fsa
@@ -19,6 +22,7 @@ defence:
   merge: false
 models:
   gemma:
+    post_hoc: true            # decided after seeing run3's results: label every Gemma result so
     # Must stay identical to fsa.approach.yaml models.gemma.model (checked).
     model: {batch_size: 16, revision: 96b6f1eccf38110c56df3a15bffe176da04bfd80}
     defence:
@@ -29,10 +33,18 @@ models:
       # "SELECTION:" line of the train log): step 500, rule_met true. The bridge refuses any other file.
       adapter_sha256: 63a6d34663c64b26d1b36b49c0221523300a457fe4f85a2b98152f14742ddbc3
   qwen:
+    post_hoc: false
+    pre_registered: docs/prereg_qwen_nouse.md   # dated 2026-11-28, before training
     # Must stay identical to fsa.approach.yaml models.qwen.model (original_from checks every model).
     model: {batch_size: 16}
     defence:
-      todo: "Gemma-only post-hoc ablation: no Qwen adapter"
+      # <run>/adapter of the training run fsa_lite_qwen7b_run3_nouse (on NSCC under $SCRATCH, outside the
+      # repository; its path goes in paths.local.yaml): the checkpoint the pre-registered dev rule chose.
+      adapter: {local: qwen_fsa_lite_run3_nouse}   # paths.local.yaml adapters.<key>
+      # sha256 of adapter_model.safetensors of the SELECTED adapter ("SELECTION:" line of the train
+      # log, selection.json adapter_sha256): FILL_ME until training is done. The technique variant
+      # (and scripts/inadvertent.py generate) refuses to run while it is a placeholder.
+      adapter_sha256: FILL_ME
 synthetic:
   # The same training data and dev split as run3, so the same used-secrets file (never committed).
   used_secrets: private/fsa_lite_run3_used_secrets.txt

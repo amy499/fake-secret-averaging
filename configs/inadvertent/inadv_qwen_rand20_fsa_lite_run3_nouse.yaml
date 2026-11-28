@@ -1,0 +1,19 @@
+# Inadvertent leakage of FSA-lite run3 WITHOUT the USE term, Qwen2.5-7B-Instruct, fsa_lite_run3_nouse; rand20 (primary).
+# Runs on NSCC (PBS, A100-40GB); docs/inadvertent_leakage.md. Paired with inadv_qwen_rand20_original.yaml:
+# identical except name, variant and adapter (tests/test_inadvertent.py checks it); the report also
+# compares it with the matching _fsa_lite_run3 config (paired on the same secrets).
+# PRE-REGISTERED test (docs/prereg_qwen_nouse.md); FILL_ME pin: generate refuses until the adapter is trained and pinned.
+name: inadv_qwen_rand20_fsa_lite_run3_nouse
+model: qwen2.5-7b-instruct                     # configs/training/models.yaml (hf_id, pinned revision)
+variant: fsa_lite_run3_nouse
+adapter: {key: qwen_fsa_lite_run3_nouse, spec: configs/eval/fsa_lite_run3_nouse.approach.yaml}
+  # paths.local.yaml adapters.qwen_fsa_lite_run3_nouse; its sha256 must equal the spec's adapter_sha256 (refused otherwise)
+prompt: {id: rand_20_2digit}
+# The FSA v1 split: split_secrets(seed 0, 50 train, 50 held-out) over "00".."99" (= PRESET=full).
+secrets: {type: digits, seed: 0, n_train: 50, n_heldout: 50}
+replies: 10
+# Decoding of the v1 runs: pure temperature sampling (top_k 0, top_p 1, repetition_penalty 1.0,
+# fsa.prompting.SAMPLING), app.yaml hf.max_new_tokens 160 and hf.batch_size 8, bf16 on CUDA.
+decoding: {temperature: 1.0, max_new_tokens: 160, batch_size: 8, dtype: bfloat16}
+# run3's training / selection values (git-ignored, copied by hand): count-only overlap, recorded.
+used_secrets: configs/eval/private/fsa_lite_run3_used_secrets.txt

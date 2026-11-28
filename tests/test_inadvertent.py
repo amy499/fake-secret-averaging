@@ -30,6 +30,7 @@ from scripts import baseline_leakage, inadvertent
 
 REPO = Path(__file__).resolve().parents[1]
 RUN3_SPEC = REPO / "configs" / "eval" / "fsa_lite_run3.approach.yaml"
+NOUSE_SPEC = REPO / "configs" / "eval" / "fsa_lite_run3_nouse.approach.yaml"
 QWEN_REV = "a09a35458c702b33eeacc393d103063234e8bc28"
 GEMMA_REV = "96b6f1eccf38110c56df3a15bffe176da04bfd80"
 BASH = shutil.which("bash")
@@ -47,19 +48,24 @@ def _without_variant_args(args: list[str]) -> list[str]:
 def test_every_config_pairs_and_differs_only_in_name_variant_adapter():
     configs = inadvertent.all_configs()
     ps = inadvertent.pairs(configs)
-    assert len(configs) == 12 and len(ps) == 6
+    assert inadvertent.VARIANTS == ("original", "fsa_lite_run3", "fsa_lite_run3_nouse")
+    assert len(configs) == 18 and len(ps) == 6
     assert {f"inadv_{m}_{p}" for m in ("qwen", "gemma") for p in inadvertent.PROMPTS} == set(ps)
     for name, p in ps.items():
-        o, a = p["original"], p["fsa_lite_run3"]
-        assert inadvertent.shared(o) == inadvertent.shared(a), name
-        assert {k for k in set(o) | set(a) if o.get(k) != a.get(k)} == {"name", "variant", "adapter"}
-        assert o["adapter"] is None and a["adapter"]["spec"] == "configs/eval/fsa_lite_run3.approach.yaml"
-        # the generation arguments differ only by the name, the method label and the adapter
-        ao = inadvertent.baseline_args(o, backend="real", device="cuda")
-        aa = inadvertent.baseline_args(a, backend="real", device="cuda")
-        assert _without_variant_args(ao) == _without_variant_args(aa)
-    keys = {p["fsa_lite_run3"]["model"]: p["fsa_lite_run3"]["adapter"]["key"] for p in ps.values()}
-    assert keys == {"qwen2.5-7b-instruct": "qwen_fsa_lite_run3", "gemma3-12b-it": "gemma_fsa_lite_run3"}
+        o = p["original"]
+        assert o["adapter"] is None
+        for tech in inadvertent.TECHNIQUES:
+            a = p[tech]
+            assert inadvertent.shared(o) == inadvertent.shared(a), (name, tech)
+            assert {k for k in set(o) | set(a) if o.get(k) != a.get(k)} == {"name", "variant", "adapter"}
+            assert a["name"] == f"{name}_{tech}" and a["adapter"]["spec"] == f"configs/eval/{tech}.approach.yaml"
+            # the generation arguments differ only by the name, the method label and the adapter
+            ao = inadvertent.baseline_args(o, backend="real", device="cuda")
+            aa = inadvertent.baseline_args(a, backend="real", device="cuda")
+            assert _without_variant_args(ao) == _without_variant_args(aa)
+    for tech, suffix in (("fsa_lite_run3", "fsa_lite_run3"), ("fsa_lite_run3_nouse", "fsa_lite_run3_nouse")):
+        keys = {p[tech]["model"]: p[tech]["adapter"]["key"] for p in ps.values()}
+        assert keys == {"qwen2.5-7b-instruct": f"qwen_{suffix}", "gemma3-12b-it": f"gemma_{suffix}"}
 
 
 def test_the_two_methods_see_the_same_prompt():
@@ -90,10 +96,19 @@ def test_config_errors(tmp_path):
     with pytest.raises(inadvertent.ConfigError, match="original variant has no adapter"):
         inadvertent.load_config(tmp_path / "inadv_qwen_rand20_original.yaml")
     other = yaml.safe_load((inadvertent.CONFIG_DIR / "inadv_qwen_rand20_fsa_lite_run3.yaml").read_text(encoding="utf-8"))
+    nouse = yaml.safe_load((inadvertent.CONFIG_DIR / "inadv_qwen_rand20_fsa_lite_run3_nouse.yaml").read_text(encoding="utf-8"))
     (tmp_path / "inadv_qwen_rand20_original.yaml").write_text(yaml.safe_dump(good), encoding="utf-8")
-    (tmp_path / "inadv_qwen_rand20_fsa_lite_run3.yaml").write_text(yaml.safe_dump({**other, "replies": 8}), encoding="utf-8")
-    with pytest.raises(inadvertent.ConfigError, match=r"differ in \['replies'\]"):
+    (tmp_path / "inadv_qwen_rand20_fsa_lite_run3.yaml").write_text(yaml.safe_dump(other), encoding="utf-8")
+    with pytest.raises(inadvertent.ConfigError, match="needs"):  # a group without its no-use variant
         inadvertent.pairs(inadvertent.all_configs(tmp_path))
+    (tmp_path / "inadv_qwen_rand20_fsa_lite_run3_nouse.yaml").write_text(yaml.safe_dump({**nouse, "replies": 8}), encoding="utf-8")
+    with pytest.raises(inadvertent.ConfigError, match=r"original and fsa_lite_run3_nouse differ in \['replies'\]"):
+        inadvertent.pairs(inadvertent.all_configs(tmp_path))
+    # a technique's adapter must be pinned by its own approach spec
+    wrong = {**nouse, "adapter": {**nouse["adapter"], "spec": "configs/eval/fsa_lite_run3.approach.yaml"}}
+    (tmp_path / "inadv_qwen_rand20_fsa_lite_run3_nouse.yaml").write_text(yaml.safe_dump(wrong), encoding="utf-8")
+    with pytest.raises(inadvertent.ConfigError, match="is pinned by configs/eval/fsa_lite_run3_nouse.approach.yaml"):
+        inadvertent.load_config(tmp_path / "inadv_qwen_rand20_fsa_lite_run3_nouse.yaml")
     assert inadvertent.main(["score", "inadv_qwen_rand20_original", "--threat", "public_weights", "--backend", "mock"]) == 1
 
 
@@ -107,6 +122,15 @@ def test_pins_come_from_the_run3_approach_spec():
     assert g["model"] == "gemma" and g["adapter_sha256"].startswith("324d8d8d")
     with pytest.raises(PC.AdapterError, match="0 models use adapter"):
         PC.pin_for_local_key(RUN3_SPEC, "no_such_key")
+    # the no-use spec: Gemma pinned (post hoc, step 500), Qwen FILL_ME until trained (pre-registered)
+    gn = PC.pin_for_local_key(NOUSE_SPEC, "gemma_fsa_lite_run3_nouse")
+    assert gn["model"] == "gemma" and gn["adapter_sha256"].startswith("63a6d346")
+    with pytest.raises(PC.AdapterError, match="placeholder"):
+        PC.pin_for_local_key(NOUSE_SPEC, "qwen_fsa_lite_run3_nouse")
+    ps = inadvertent.pairs(inadvertent.all_configs())
+    assert inadvertent.standing(ps["inadv_gemma_rand20"]["fsa_lite_run3_nouse"]) == "post hoc"
+    assert inadvertent.standing(ps["inadv_qwen_rand20"]["fsa_lite_run3_nouse"]) == "pre-registered (docs/prereg_qwen_nouse.md)"
+    assert inadvertent.standing(ps["inadv_qwen_rand20"]["fsa_lite_run3"]) is None
     with pytest.raises(PC.AdapterError, match="placeholder"):
         PC.normalise_pin("FILL_ME")
     with pytest.raises(PC.AdapterError, match="not a sha256"):
@@ -289,6 +313,86 @@ def _logits(model, tok, secret="37"):
         return model(torch.tensor([ids])).logits[0, -1].float()
 
 
+def _hub_cache(root: Path, hf_id: str, commit: str, src: Path | None = None) -> Path:
+    """A Hugging Face hub-cache tree: models--<org>--<name>/{refs/main, snapshots/<commit>/...}."""
+    repo = root / ("models--" + hf_id.replace("/", "--"))
+    snap = repo / "snapshots" / commit
+    if src is not None:
+        shutil.copytree(src, snap)
+    else:
+        snap.mkdir(parents=True)
+        (snap / "config.json").write_text("{}", encoding="utf-8")
+    (repo / "refs").mkdir(parents=True, exist_ok=True)
+    (repo / "refs" / "main").write_text(commit, encoding="utf-8")
+    return snap
+
+
+def test_revision_loaded_from_the_snapshot_path(tmp_path):
+    """NSCC runs load offline from the hub cache and transformers may report no _commit_hash: the
+    commit is read from the snapshot folder; a different commit than the pin is refused."""
+    from fsa_runtime.generators import hf
+    from fsa_runtime.generators.base import GeneratorUnavailable
+
+    a, b = QWEN_REV, "b" * 40
+    hid = "Qwen/Qwen2.5-7B-Instruct"
+    for p in (f"/scratch/hf/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/{a}/config.json",
+              f"C:\\hf\\hub\\models--Qwen--Qwen2.5-7B-Instruct\\snapshots\\{a}",
+              f"models--Qwen--Qwen2.5-7B-Instruct/snapshots/{a}/"):  # fmt: skip
+        assert hf.commit_from_snapshot_path(p, hid) == a
+    assert hf.commit_from_snapshot_path(f"models--Qwen--Qwen2.5-0.5B/snapshots/{a}/x", hid) is None  # another repo
+    assert hf.commit_from_snapshot_path(f"models--Qwen--Qwen2.5-7B-Instruct/snapshots/{a[:12]}/x", hid) is None
+    assert hf.commit_from_snapshot_path(hid) is None and hf.commit_from_snapshot_path(None) is None
+
+    def model(commit_hash=None, name=hid):
+        return SimpleNamespace(config=SimpleNamespace(_commit_hash=commit_hash, _name_or_path=name))
+
+    cache = tmp_path / "hub"
+    assert hf.resolve_revision_loaded(model(), hid, None, cache_dir=cache) == (None, None)  # nothing cached
+    _hub_cache(cache, hid, a)
+    assert hf.resolve_revision_loaded(model(a), hid, a, cache_dir=cache) == (a, "config._commit_hash")
+    assert hf.resolve_revision_loaded(model(), hid, a, cache_dir=cache) == (a, "hf cache snapshot")
+    assert hf.resolve_revision_loaded(model(), hid, None, cache_dir=cache) == (a, "hf cache snapshot")  # refs/main
+    assert hf.resolve_revision_loaded(model(), hid, b, cache_dir=cache) == (None, None)  # pinned commit not cached
+    snap_b = f"/c/hub/models--Qwen--Qwen2.5-7B-Instruct/snapshots/{b}"
+    assert hf.resolve_revision_loaded(model(name=snap_b), hid, a, cache_dir=cache) == (b, "config._name_or_path snapshot")
+    hf.check_revision(hid, a, a, "hf cache snapshot")
+    hf.check_revision(hid, a, None, None)  # unresolved: recorded as null, not refused
+    hf.check_revision(hid, None, b, "hf cache snapshot")  # no pin: recorded only
+    with pytest.raises(GeneratorUnavailable, match=f"loaded revision {b} \\(config._name_or_path snapshot\\), pinned {a}"):
+        hf.check_revision(hid, a, *hf.resolve_revision_loaded(model(name=snap_b), hid, a, cache_dir=cache))
+
+
+def test_offline_hub_cache_load_records_and_checks_the_commit(tiny_dirs, tmp_path, monkeypatch):
+    """A tiny model loaded offline from a hub-cache tree (as on NSCC): revision_loaded is the snapshot
+    commit, also when transformers reports no _commit_hash; a resolved commit other than the pin
+    is refused and nothing is cached."""
+    import huggingface_hub.constants
+    from fsa_runtime.generators import hf
+    from fsa_runtime.generators.base import GeneratorUnavailable
+
+    # offline as on NSCC (cluster.env HF_HUB_OFFLINE=1): the hub library reads the variable at import,
+    # so the flag is set in-process too; every HTTP request then raises instead of reaching the hub
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
+    hid, rev = "tiny-org/tiny-qwen2", "c" * 40
+    cache = tmp_path / "hub"
+    _hub_cache(cache, hid, rev, src=tiny_dirs["qwen2"])
+    spec = ModelSpec(method="base", base_model="tiny", hf_id=hid, revision=rev)
+    gen = hf.HFGenerator(templates=load_system_templates(), device="cpu", dtype="float32", max_new_tokens=8,
+                         batch_size=4, cache_dir=str(cache))  # fmt: skip
+    _, model = gen._load(spec)
+    rec = hf.load_record(gen, spec)
+    assert rec["revision_requested"] == rec["revision_loaded"] == rev and rec["revision_source"]
+    model.config._commit_hash = None  # what the NSCC runs saw
+    assert hf.resolve_revision_loaded(model, hid, rev, cache_dir=str(cache)) == (rev, "hf cache snapshot")
+    monkeypatch.setattr(hf, "resolve_revision_loaded", lambda *a, **k: ("d" * 40, "hf cache snapshot"))
+    gen2 = hf.HFGenerator(templates=load_system_templates(), device="cpu", dtype="float32", max_new_tokens=8,
+                          batch_size=4, cache_dir=str(cache))  # fmt: skip
+    with pytest.raises(GeneratorUnavailable, match=f"loaded revision {'d' * 40} .*pinned {rev}"):
+        gen2._load(spec)
+    assert not gen2._loaded and not gen2.loaded_info
+
+
 @pytest.mark.parametrize("name", ["qwen2", "gemma3"])
 def test_wrong_sha_is_refused_before_the_model_loads(tiny_dirs, tmp_path, monkeypatch, name):
     import transformers
@@ -413,26 +517,87 @@ def test_check_run_pair():
     ad["eval"]["secrets"]["heldout"] = ["03"]
     assert PL.check_run_pair(base, ad) == ["generation.loaded.revision_loaded differs", "the heldout secrets differ"]
     assert "the adapter run has no adapter" in PL.check_run_pair(base, base)
+    # run3 as the reference of run3 no-use: both adapter runs, different adapters
+    ad["generation"]["loaded"]["revision_loaded"] = QWEN_REV
+    ad["eval"]["secrets"]["heldout"] = ["02"]
+    nu = json.loads(json.dumps(ad))
+    nu["generation"].update(adapter="/x/adapter_nouse", adapter_key="k2")
+    assert PL.check_run_pair(ad, nu, reference_has_adapter=True) == []
+    assert PL.check_run_pair(ad, ad, reference_has_adapter=True) == ["the two runs use the same adapter"]
+    assert PL.check_run_pair(base, nu, reference_has_adapter=True) == ["the reference run has no adapter"]
+    assert PL.check_run_pair(ad, nu) == ["the original run has an adapter"]
 
 
-def test_mock_dry_run_one_pair_end_to_end(tmp_path, monkeypatch):
-    """generate (mock) -> score both threat models (mock scorer) -> one table per model."""
+def _csv(path: Path) -> list[dict]:
+    import csv
+
+    with path.open(encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def test_mock_dry_run_one_pair_end_to_end(tmp_path, monkeypatch, capsys):
+    """generate (mock) -> score both threat models (mock scorer) -> one table per model. Qwen:
+    original and run3 run; the no-use config is refused (FILL_ME pin), so its contrasts are missing."""
     monkeypatch.setenv("FSA_MOCK_RUNS_DIR", str(tmp_path / "runs"))
     monkeypatch.setenv("FSA_PATHS_FILE", str(tmp_path / "absent.yaml"))
     for c in ("inadv_qwen_rand20_original", "inadv_qwen_rand20_fsa_lite_run3"):
         assert inadvertent.main(["generate", c, "--backend", "mock"]) == 0
         assert inadvertent.main(["score", c, "--threat", "grey_box", "--backend", "mock"]) == 0
     assert inadvertent.main(["score", "inadv_qwen_rand20_fsa_lite_run3", "--threat", "public_weights", "--backend", "mock"]) == 0
+    capsys.readouterr()
+    assert inadvertent.main(["generate", "inadv_qwen_rand20_fsa_lite_run3_nouse", "--backend", "mock"]) != 0
+    assert "placeholder FILL_ME" in capsys.readouterr().err
+    assert not list((tmp_path / "runs").glob("*nouse*"))  # refused before anything was written
     assert inadvertent.main(["report", "--model", "qwen", "--backend", "mock", "--runs-dir", str(tmp_path / "runs"),
                              "--out-dir", str(tmp_path / "rep"), "--n-bootstrap", "200"]) == 0  # fmt: skip
-    rows = (tmp_path / "rep" / "qwen" / "inadvertent_leakage.csv").read_text(encoding="utf-8").splitlines()
-    head = rows[0].split(",")
+    path = tmp_path / "rep" / "qwen" / "inadvertent_leakage.csv"
+    head = path.read_text(encoding="utf-8").splitlines()[0].split(",")
     assert head == inadvertent.CSV_COLUMNS and not {"secret", "secrets", "reply", "code"} & set(head)
-    ok = [r for r in rows[1:] if r.startswith("qwen2.5-7b-instruct,rand20,")]
-    assert len(ok) == 2 * 4 and all(",ok," in r for r in ok)
+    rows = [r for r in _csv(path) if r["prompt"] == "rand20"]
+    assert len(rows) == 2 * 3 * 4  # threat models x contrasts x metrics
+    ok = [r for r in rows if r["status"] == "ok"]
+    assert len(ok) == 2 * 4 and {(r["technique"], r["reference"]) for r in ok} == {("fsa_lite_run3", "original")}
+    assert all(r["status"] == "no finished run: fsa_lite_run3_nouse" for r in rows if r["technique"] == "fsa_lite_run3_nouse")
     md = (tmp_path / "rep" / "qwen" / "inadvertent_leakage.md").read_text(encoding="utf-8")
     assert "MOCK" in md and "| rand20 | public_weights | ≥ bits, calibrated |" in md
-    assert "lottery | grey_box | — | — | — | — | no finished run" in md
+    assert "| run3 no-use − run3 [95% CI] |" in md and "— (no finished run: fsa_lite_run3_nouse)" in md
+    assert "lottery | grey_box | — | — |" in md and "no finished run" in md
+    assert "standing on qwen2.5-7b-instruct: run3 no-use: pre-registered (docs/prereg_qwen_nouse.md)" in md
+
+
+def test_mock_report_three_variants_in_one_table(tmp_path, monkeypatch):
+    """Gemma, all three variants (mock): original vs run3, original vs no-use and no-use vs run3 in
+    one table, each a paired bootstrap; the original's estimate is the same in both contrasts."""
+    monkeypatch.setenv("FSA_MOCK_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("FSA_PATHS_FILE", str(tmp_path / "absent.yaml"))
+    for v in inadvertent.VARIANTS:
+        c = f"inadv_gemma_rand20_{v}"
+        assert inadvertent.main(["generate", c, "--backend", "mock"]) == 0
+        assert inadvertent.main(["score", c, "--threat", "grey_box", "--backend", "mock"]) == 0
+        if v != "original":
+            assert inadvertent.main(["score", c, "--threat", "public_weights", "--backend", "mock"]) == 0
+    assert inadvertent.main(["report", "--model", "gemma", "--backend", "mock", "--runs-dir", str(tmp_path / "runs"),
+                             "--out-dir", str(tmp_path / "rep"), "--n-bootstrap", "200"]) == 0  # fmt: skip
+    rows = [r for r in _csv(tmp_path / "rep" / "gemma" / "inadvertent_leakage.csv") if r["prompt"] == "rand20"]
+    assert len(rows) == 24 and all(r["status"] == "ok" for r in rows), {r["status"] for r in rows}
+    assert {(r["technique"], r["reference"]) for r in rows} == set(inadvertent.CONTRASTS)
+    for threat in inadvertent.THREATS:
+        for m in inadvertent.METRIC_LABELS:
+            got = {(r["technique"], r["reference"]): r for r in rows if r["threat_model"] == threat and r["metric"] == m}
+            r3o, nuo, nur3 = (got[k] for k in inadvertent.CONTRASTS)
+            assert r3o["reference_value"] == nuo["reference_value"]  # the same original estimate
+            assert nur3["reference_value"] == r3o["technique_value"] and nur3["technique_value"] == nuo["technique_value"]
+            if r3o["difference"]:  # difference of the point estimates (paired: same secrets)
+                assert float(nur3["difference"]) == pytest.approx(float(nuo["difference"]) - float(r3o["difference"]), abs=1e-9)
+            # the no-use vs run3 contrast reads each run's file of the same threat model
+            assert nur3["reference_file"] == r3o["technique_file"] and nur3["technique_file"] == nuo["technique_file"]
+    md = (tmp_path / "rep" / "gemma" / "inadvertent_leakage.md").read_text(encoding="utf-8")
+    head = next(line for line in md.splitlines() if line.startswith("| prompt |"))
+    assert head == ("| prompt | threat model | metric | n | original [95% CI] | run3 [95% CI] | run3 no-use [95% CI] | "
+                    "run3 − original [95% CI] | run3 no-use − original [95% CI] | run3 no-use − run3 [95% CI] |")  # fmt: skip
+    data = [line for line in md.splitlines() if line.startswith("| rand20 |")]
+    assert len(data) == 2 * 4 and all(line.count("|") == head.count("|") and "—" not in line.split("|")[5] for line in data)
+    assert "run3 no-use: post hoc" in md
 
 
 def test_scorer_log_names_no_secret_with_the_flag(tmp_path, monkeypatch):

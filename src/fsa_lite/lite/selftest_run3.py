@@ -23,7 +23,7 @@ On the synthetic Tensor Trust dumps, CIMemories profiles and evaluation files of
                swap with selection.json and the sha256 in training_info.json
   configs      run3 configs: the levers, mix shares, data dir and builder, dev and selection steps
   resume       v2_train refuses a run folder that holds another config's run
-  nouse        the post-hoc ablation config = run3 except name and use.weight 0; same draws, USE term off
+  nouse        the no-use configs (Gemma post-hoc, Qwen pre-registered) = run3 except name and use.weight 0; same draws, USE term off
   dev kinds    dev_wrong_kind.py: dev kgp leaks by wrong-password kind and similarity (report-only)
   audit        train_signal_audit.py (H3, report-only): buckets, replayed draws = the train log, loss
                shares, dev table; no value in its output
@@ -929,24 +929,27 @@ def test_train_signal_audit(env3: dict, tmp: Path) -> None:
 
 
 def test_nouse_config(env3: dict) -> None:
-    """POST-HOC ABLATION config: identical to the Gemma run3 config except name and use.weight 0; with
-    the same data the draw stream is the same as run3's and only the USE term is off."""
+    """The no-use configs: Gemma (POST-HOC ABLATION) and Qwen (PRE-REGISTERED, docs/prereg_qwen_nouse.md),
+    each identical to its model's run3 config except name and use.weight 0; with the same data the draw
+    stream is the same as run3's and only the USE term is off."""
     import yaml
 
     import lite_source as LS
 
     d = FSA_DIR / "configs/training/experiments"
-    r3 = yaml.safe_load((d / "fsa_lite_gemma12b_run3.yaml").read_text(encoding="utf-8"))
-    nu_text = (d / "fsa_lite_gemma12b_run3_nouse.yaml").read_text(encoding="utf-8")
-    nu = yaml.safe_load(nu_text)
-    assert nu["name"] == "fsa_lite_gemma12b_run3_nouse" and nu["use"]["weight"] == 0
-    assert {k: v for k, v in nu.items() if k not in ("name", "use")} == {k: v for k, v in r3.items() if k not in ("name", "use")}
-    assert {k: v for k, v in nu["use"].items() if k != "weight"} == {k: v for k, v in r3["use"].items() if k != "weight"}
-    assert nu_text.startswith("# POST-HOC ABLATION") and b"\r\n" not in (d / "fsa_lite_gemma12b_run3_nouse.yaml").read_bytes()
-    # the run3 file is kept verbatim below the ablation header (only the name and use.weight lines differ)
-    r3_lines = (d / "fsa_lite_gemma12b_run3.yaml").read_text(encoding="utf-8").splitlines()
-    nu_body = nu_text.split("# ---- run3's header, unchanged ----\n", 1)[1].splitlines()
-    assert len(nu_body) == len(r3_lines) and sum(a != b for a, b in zip(nu_body, r3_lines)) == 2
+    for stem, label in (("fsa_lite_gemma12b_run3", "# POST-HOC ABLATION"), ("fsa_lite_qwen7b_run3", "# PRE-REGISTERED")):
+        r3 = yaml.safe_load((d / f"{stem}.yaml").read_text(encoding="utf-8"))
+        nu_text = (d / f"{stem}_nouse.yaml").read_text(encoding="utf-8")
+        nu = yaml.safe_load(nu_text)
+        assert nu["name"] == f"{stem}_nouse" and nu["use"]["weight"] == 0 and r3["use"]["weight"] == 1.0
+        assert {k: v for k, v in nu.items() if k not in ("name", "use")} == {k: v for k, v in r3.items() if k not in ("name", "use")}
+        assert {k: v for k, v in nu["use"].items() if k != "weight"} == {k: v for k, v in r3["use"].items() if k != "weight"}
+        assert nu_text.startswith(label) and b"\r\n" not in (d / f"{stem}_nouse.yaml").read_bytes()
+        # the run3 file is kept verbatim below the ablation header (only the name and use.weight lines differ)
+        r3_lines = (d / f"{stem}.yaml").read_text(encoding="utf-8").splitlines()
+        nu_body = nu_text.split("# ---- run3's header, unchanged ----\n", 1)[1].splitlines()
+        assert len(nu_body) == len(r3_lines) and sum(a != b for a, b in zip(nu_body, r3_lines)) == 2
+    assert "prereg_qwen_nouse.md" in (d / "fsa_lite_qwen7b_run3_nouse.yaml").read_text(encoding="utf-8").split("\n#\n")[0]
     # synthetic data: the same draws; USE token weights only with run3's weight
     tok = S2.CharTok()
     srcs = []
@@ -969,7 +972,7 @@ def test_nouse_config(env3: dict) -> None:
                 assert srcs[0][0].use_token_weights(tok, a) is not None and srcs[1][0].use_token_weights(tok, b) is None
             assert srcs[0][0].masks(tok, a) == srcs[1][0].masks(tok, b)  # need-KL / FSA masks unchanged
     assert n_use > 0
-    print(f"nouse ablation config: OK (= run3 except name and use.weight 0; same 160 draws, {n_use} use draws "
+    print(f"nouse configs (gemma post-hoc, qwen pre-registered): OK (= run3 except name and use.weight 0; same 160 draws, {n_use} use draws "
           "with the USE term off, same masks)")
 
 

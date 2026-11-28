@@ -290,4 +290,6 @@ The run reuses run3's cached base replies through `reuse_replies.py`, run by `pr
 
 Then train with `lite_train.sbatch` (same `RUN_DIR`, `CONFIG_LITE` passed explicitly). The harness spec is `configs/eval/fsa_lite_run3_nouse.approach.yaml`: the selected adapter (step 500, rule met) is pinned there (sha256 prefix `63a6d346`); it runs PasswordEval only (`--benchmarks password_eval_team`). Job commands: [cluster_setup.md](cluster_setup.md).
 
+**Pre-registered Qwen test of the ablation.** `configs/training/experiments/fsa_lite_qwen7b_run3_nouse.yaml` is the Qwen run3 config with the same two changes (checked by the same self-test). It was registered on 2026-11-28, before training, in [prereg_qwen_nouse.md](prereg_qwen_nouse.md), which holds the hypothesis, endpoints, non-inferiority margins, decision rule and the NSCC training commands. The run folder is under `$SCRATCH` and reuses Qwen run3's `replies.jsonl`. The harness spec is the same `fsa_lite_run3_nouse.approach.yaml`, `models.qwen` (`post_hoc: false`, `pre_registered`); its `adapter_sha256` is `FILL_ME` until the run's `SELECTION:` line, and the bridge refuses the adapter until then.
+
 Self-tests: `selftest_run3.py` (run by `selftest_v2.py`) covers run3; `selftest_postnorm.py` covers Part B on tiny random Gemma3/Qwen2 models; its `--plot-only` mode runs in the harness .venv.

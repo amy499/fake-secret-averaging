@@ -11,9 +11,11 @@ model is never asked to reveal the code, yet the numbers it picks can still carr
 Gemma-3-12B on `rand_20_2digit` gives the likelihood attacker the code exactly in 100% of held-out
 secrets ([results/fsa_v1/summary.md](../results/fsa_v1/summary.md)). This page measures whether the
 **FSA-lite run3** adapters (trained against *explicit* extraction, [fsa_lite_pipeline.md](fsa_lite_pipeline.md))
-change that inadvertent leakage. It is a **paired** comparison: the original model vs the same model
-with the run3 adapter, on identical prompts, secrets, seeds and decoding, for Qwen2.5-7B-Instruct
-(NSCC) and Gemma-3-12B-it (TC2).
+change that inadvertent leakage, and so does **run3 without the USE term** (`fsa_lite_run3_nouse`:
+a post-hoc ablation on Gemma, a pre-registered test on Qwen, [prereg_qwen_nouse.md](prereg_qwen_nouse.md)).
+It is a **paired** comparison: the original model vs the same model with each adapter, on
+identical prompts, secrets, seeds and decoding, for Qwen2.5-7B-Instruct (NSCC) and Gemma-3-12B-it
+(TC2).
 
 - **Generation** (`scripts/baseline_leakage.py`): 50 attacker-train + 50 held-out secrets, the v1
   split `split_secrets(seed 0, 50, 50)` (= v1 `PRESET=full`), 10 replies per secret (12 for
@@ -29,8 +31,10 @@ with the run3 adapter, on identical prompts, secrets, seeds and decoding, for Qw
 - **Statistics** (`fsa.eval.paired_leakage`, report only): per secret log2 p(true code), tie-aware
   exact and top-5 credit; then ≥ bits leaked = max(0, log2 100 − mean cross-entropy), calibrated and
   raw, exact and top-5, each with a 95% percentile bootstrap CI over the 50 held-out secrets, and
-  the **paired difference** (run3 − original) with the same resampled secrets in every draw. Output:
-  `outputs/inadvertent/<model>/inadvertent_leakage.{md,csv}`, one table per model, aggregates only.
+  three **paired differences**, run3 − original, run3 no-use − original and run3 no-use − run3,
+  each with the same resampled secrets for its two variants in every draw. Output:
+  `outputs/inadvertent/<model>/inadvertent_leakage.{md,csv}`, one table per model (original, run3
+  and run3 no-use side by side; the CSV has one row per contrast), aggregates only.
 
 ### Threat models
 
@@ -40,18 +44,22 @@ with the run3 adapter, on identical prompts, secrets, seeds and decoding, for Qw
 | `public_weights` | base model only, on the adapter run's replies | an attacker who has the public base weights but not the adapter |
 
 The original model has no adapter, so its `grey_box` file is also its public-weights result; both
-threat-model rows compare the adapter run against that same original file.
+threat-model rows compare an adapter run against that same original file. The run3 no-use − run3
+contrast reads both adapter runs under the same threat model.
 
 ### Pairing
 
-`configs/inadvertent/inadv_<model>_<prompt>_<variant>.yaml`, one per (model, variant, prompt set),
-12 files. Within a pair the files differ only in `name`, `variant` and `adapter`;
+`configs/inadvertent/inadv_<model>_<prompt>_<variant>.yaml`, one per (model, variant, prompt set):
+2 models × 3 prompt sets × 3 variants (`original`, `fsa_lite_run3`, `fsa_lite_run3_nouse`) = 18
+files. Each technique file differs from its original only in `name`, `variant` and `adapter`, and
+its adapter is pinned by its own approach spec (`configs/eval/<variant>.approach.yaml`);
 `python -m scripts.inadvertent check` and `tests/test_inadvertent.py` refuse anything else. The
-original runs as method `base`, the adapter as method `fsa`: both use the same "base" system
+original runs as method `base`, the adapters as method `fsa`: all use the same "base" system
 template (tested), so the model sees byte-identical prompts. The report re-checks the finished runs
-(`fsa.eval.paired_leakage.check_run_pair`): same train and held-out secrets, prompts, seed, replies,
-temperature, decoding, dtype, revision pinned and revision loaded; otherwise the row says
-`not paired: <field> differs` instead of a number.
+of each contrast (`fsa.eval.paired_leakage.check_run_pair`): same train and held-out secrets,
+prompts, seed, replies, temperature, decoding, dtype, revision pinned and revision loaded, and for
+no-use − run3 two different adapters. Otherwise the cell says `not paired: <field> differs`
+instead of a number.
 
 ### Model, revision, adapter
 
@@ -61,9 +69,16 @@ temperature, decoding, dtype, revision pinned and revision loaded; otherwise the
   load at that revision; config.yaml records `model.revision` and `generation.loaded.revision_loaded`,
   and a different loaded commit refuses. The scorer loads the run's recorded revision.
 - The adapter is found through `paths.local.yaml adapters.<key>` (`qwen_fsa_lite_run3`,
-  `gemma_fsa_lite_run3`). Its `adapter_model.safetensors` sha256 must start with the pin in
-  `configs/eval/fsa_lite_run3.approach.yaml` (Qwen `d5f8ca21…`, Gemma `324d8d8d…`); it is checked
-  before the base model loads, and again by the scorer (grey_box). A mismatch refuses.
+  `gemma_fsa_lite_run3`, `qwen_fsa_lite_run3_nouse`, `gemma_fsa_lite_run3_nouse`). Its
+  `adapter_model.safetensors` sha256 must start with the pin in its approach spec:
+  `configs/eval/fsa_lite_run3.approach.yaml` (Qwen `d5f8ca21…`, Gemma `324d8d8d…`) or
+  `configs/eval/fsa_lite_run3_nouse.approach.yaml` (Gemma `63a6d346…`; Qwen `FILL_ME` until the
+  pre-registered run is trained, and until then `generate` refuses the Qwen no-use configs). It is
+  checked before the base model loads, and again by the scorer (grey_box). A mismatch refuses.
+- `generation.loaded.revision_loaded` is the commit transformers reports (`config._commit_hash`).
+  When it reports none, as happens when loading offline from the HF cache, the commit is read from
+  the snapshot folder the files came from (`models--<org>--<name>/snapshots/<commit>`);
+  `generation.loaded.revision_source` says which. A resolved commit other than the pin refuses.
 - Loading goes through `fsa.training.peft_check`, the harness bridge's own checks
   (`eval/experiments/_bridges/fsa.py` now imports them from there): layout and shapes against the
   live model, target_modules, the tensor count, training_info.json, a key remap if the prefix
@@ -102,7 +117,9 @@ prints its ETA; read the first job's log before submitting the rest.
 | | lottery | ~15 min | ~27 min | 2 + 3 |
 | | unpredictabench_2digit | ~47 min | ~60 min | 2 + 3 |
 
-Scoring jobs per prompt set: original grey_box, run3 grey_box, run3 public_weights (3).
+Scoring jobs per prompt set: original grey_box, run3 grey_box, run3 public_weights (3). The
+no-use variant adds one generation and two scorings (grey_box, public_weights) per prompt set at
+the same per-job cost, so 1 + 2 jobs per row; the totals below are for original + run3.
 `--calibrate` scores the 50 train secrets as well as the 50 held-out ones, which doubles the
 scoring time; it is included above.
 
@@ -123,12 +140,14 @@ lottery and UnpredictaBench pairs, which reuse nothing and cost the same per job
 # NSCC: paths.local.yaml
 adapters:
   qwen_fsa_lite_run3: <OLD_FSA>/outputs/training/fsa_lite_qwen7b_run3/adapter
+  qwen_fsa_lite_run3_nouse: <SCRATCH>/harness_adapters/qwen_fsa_lite_run3_nouse   # once trained (prereg_qwen_nouse.md)
 ```
 
 ```yaml
 # TC2: paths.local.yaml
 adapters:
   gemma_fsa_lite_run3: <OLD_FSA>/outputs/training/fsa_lite_gemma12b_run3/adapter
+  gemma_fsa_lite_run3_nouse: <run folder of fsa_lite_gemma12b_run3_nouse>/adapter   # the selected step 500 (63a6d346...)
 ```
 
 The used-secrets file: **copy** it on the same cluster (never between clusters, never commit),
@@ -232,6 +251,30 @@ INADV_CONFIG=inadv_gemma_unpredictabench_fsa_lite_run3 THREAT=public_weights SBA
 INADV_REPORT=gemma SBATCH_EXTRA="--time=00:10:00" bash scripts/submit_slurm.sh scripts/slurm/fsa_likelihood.sbatch
 ```
 
+### The no-use variant (both clusters)
+
+The same jobs with `_fsa_lite_run3_nouse` configs; the report then fills the run3 no-use columns.
+On Qwen, only after the adapter is trained and its sha256 is pinned
+([prereg_qwen_nouse.md](prereg_qwen_nouse.md)): until then `generate` refuses it.
+
+```bash
+# NSCC (login node), from <SCRATCH>/fsa-lite: rand_20_2digit (the pre-registered secondary endpoint)
+QSUB_EXTRA="-l walltime=01:00:00 -v INADV_CONFIG=inadv_qwen_rand20_fsa_lite_run3_nouse" bash scripts/submit_pbs.sh scripts/pbs/fsa_baseline.pbs
+# when it has finished:
+QSUB_EXTRA="-l walltime=01:00:00 -v INADV_CONFIG=inadv_qwen_rand20_fsa_lite_run3_nouse,THREAT=grey_box" bash scripts/submit_pbs.sh scripts/pbs/fsa_likelihood.pbs
+QSUB_EXTRA="-l walltime=01:00:00 -v INADV_CONFIG=inadv_qwen_rand20_fsa_lite_run3_nouse,THREAT=public_weights" bash scripts/submit_pbs.sh scripts/pbs/fsa_likelihood.pbs
+QSUB_EXTRA="-l walltime=00:10:00 -v INADV_REPORT=qwen" bash scripts/submit_pbs.sh scripts/pbs/fsa_likelihood.pbs
+```
+
+```bash
+# TC2 (login node), from $HOME/fsa-lite: rand_20_2digit (lottery / unpredictabench: the walltimes of step 2 above)
+INADV_CONFIG=inadv_gemma_rand20_fsa_lite_run3_nouse SBATCH_EXTRA="--time=01:00:00" bash scripts/submit_slurm.sh scripts/slurm/fsa_baseline.sbatch
+# after it has finished, two at a time:
+INADV_CONFIG=inadv_gemma_rand20_fsa_lite_run3_nouse THREAT=grey_box SBATCH_EXTRA="--time=01:30:00" bash scripts/submit_slurm.sh scripts/slurm/fsa_likelihood.sbatch
+INADV_CONFIG=inadv_gemma_rand20_fsa_lite_run3_nouse THREAT=public_weights SBATCH_EXTRA="--time=01:30:00" bash scripts/submit_slurm.sh scripts/slurm/fsa_likelihood.sbatch
+INADV_REPORT=gemma SBATCH_EXTRA="--time=00:10:00" bash scripts/submit_slurm.sh scripts/slurm/fsa_likelihood.sbatch
+```
+
 ### Reading a log
 
 Generation logs print the backend banner, `used-secrets overlap (...): a/50 held-out and b/50
@@ -251,13 +294,15 @@ uv run --group ml python -m pytest -q tests/test_inadvertent.py
 
 ```bash
 # Git Bash, repository root: the whole pipeline on the mock backend (synthetic replies, a digit-dip
-# scorer instead of a model; the numbers say nothing about a real model), outside the repository
+# scorer instead of a model; the numbers say nothing about a real model), outside the repository.
+# The Qwen no-use configs are refused (FILL_ME pin) until that adapter is pinned: their cells say
+# "no finished run".
 export FSA_MOCK_RUNS_DIR="$TEMP/inadv_dry/runs"
 for c in configs/inadvertent/*.yaml; do
   n=$(basename "$c" .yaml)
-  uv run python -m scripts.inadvertent generate "$n" --backend mock
+  uv run python -m scripts.inadvertent generate "$n" --backend mock || continue
   uv run python -m scripts.inadvertent score "$n" --threat grey_box --backend mock
-  case "$n" in *_fsa_lite_run3) uv run python -m scripts.inadvertent score "$n" --threat public_weights --backend mock ;; esac
+  case "$n" in *_original) ;; *) uv run python -m scripts.inadvertent score "$n" --threat public_weights --backend mock ;; esac
 done
 uv run python -m scripts.inadvertent report --backend mock --runs-dir "$FSA_MOCK_RUNS_DIR" --out-dir "$TEMP/inadv_dry/report"
 ```
